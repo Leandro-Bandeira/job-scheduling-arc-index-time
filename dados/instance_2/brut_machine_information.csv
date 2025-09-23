@@ -1,0 +1,10 @@
+processo,tipoMaquina,maximo_caixas,turnos
+Cold Box Gasado,Cold Box 1,1,
+Cold Box Gasado,Cold Box 2,1,
+Cold Box Gasado,Cold Box 4,1,2
+Cold Box Gasado,Cold Box pequena,1,"1,2"
+Cold Box Soprado,_,1,"1,2"
+Cura frio chão,_,2,"1,2,3"
+Cura frio mesa,_,10,"1,2"
+Cura frio vibrado,_,1,"1,2"
+Shell,_,1,geral

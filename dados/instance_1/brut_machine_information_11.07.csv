@@ -1,0 +1,8 @@
+processo,recurso,maximo_caixas,turnos
+Cold Box Gasado,Cold Box 4,1,2
+Cold Box Gasado,Cold Box Pequena,1,"1,2"
+Cold Box Soprado,sopradora,1,"1,2"
+pepset,chao,2,"1,2,3"
+pepset,carrossel,10,"1,2"
+pepset,vibrado,1,"1,2"
+shell,shell,1,geral
