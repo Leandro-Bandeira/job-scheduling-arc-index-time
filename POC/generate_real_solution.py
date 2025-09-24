@@ -40,10 +40,15 @@ def main():
         exit()
     
     file_path = pathlib.Path(args.base_data)
+    dir_path = file_path.parent 
+
     init_date = args.init_date
     
     demand_df = pd.read_csv(file_path, parse_dates=['not_before_date', 'deadline'])
+    mask = demand_df['deadline'] < init_date
+    demand_df.loc[mask, 'deadline'] = init_date
     
+    violations_per_machine = []
     # Agrupando por processo e recurso
     for (process, resource), current_df in demand_df.groupby(["processo", "recurso"], sort=False):
         init_dt = init_date
@@ -56,10 +61,14 @@ def main():
         current_df = calculate_init_end_singleMachine(current_df, init_dt)
         
 
-        count_deadline_violation = (current_df['fim'] > current_df['deadline']).sum()
+        current_df['deadline_violation'] = current_df['fim'].dt.date > current_df['deadline'].dt.date
+        violations_per_machine.append(current_df)
+
         print(f"Analisando a máquina: {process}_{resource} com dia de início {init_dt}")
-        print(f"Operações que violaram a deadline: {count_deadline_violation}")
         
+    path_output = dir_path / "violations.csv"
+    violations_df = pd.concat(violations_per_machine, ignore_index=True)
+    violations_df.to_csv(path_output, index=False)
 
 
 
