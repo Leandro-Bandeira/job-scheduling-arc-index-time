@@ -1,22 +1,31 @@
-import pandas as pd
-
 import argparse
+import re
 import pathlib
 
-from datetime import datetime, timedelta
 
+import pandas as pd
+
+from unidecode import unidecode
+
+from datetime import datetime, timedelta
+from typing import Dict, Tuple
+
+
+def normalize_string(value) -> str:
+    """Normaliza string: remove acentos, minúsculas, sem espaços."""
+    if pd.isna(value):
+        return ""
+    return unidecode(str(value)).lower().replace(" ", "")
 
 # Função responsavel por calcular o inicio e fim de um dataframe
-# 1. Devemos agrupar por mesma deadline
-# 2. Dentro do grupo que os jobs possuem a mesma deadline, agruparemos pela coluna ordenacao
-# 3. Caso o not before date job nao seja maior que init_dt, devemos coloca-lo no proximo grupo
+# 1. Df é um dataframe ordenado em prioridade de deadline e ordenação
+# 2. work_days é o conjunto de dias possiveis de trabalho dado o dia inicial ate a sexta-feira da mesma semana
+# 3. Para cada linha do dataframe, caso seu not_before_date seja menor ou igual ao dia no sequenciamento, calcula-se o inicio e o fim
+# 4. Se no fim existirem linhas que não foram calculadas inicio e fim, é porque não é possível produzir o job naquela semana
 
 def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list) -> pd.DataFrame:    
 
     df['not_sequence'] = False # Define que nenhum job foi sequenciado
-    
-
-    # Agrupa por deadline
     
     # Vamos organizar do init_dt ate a sexta feira da mesma semana
     # Cria uma mascara dos jobs que estao sequenciados em df que possuem not before date >= init_date
@@ -30,23 +39,74 @@ def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list) -> pd.Data
 
         for idx, row in current_df.iterrows():
             df.at[idx, 'inicio'] = current_dt
-            fim  = current_dt + pd.to_timedelta(row['Tempo Total (minutos)'], unit='m')
+            if row['Tempo Total (minutos)'] == '-':
+                row['Tempo Total (minutos)'] = 1
+            fim  = current_dt + pd.to_timedelta(int(row['Tempo Total (minutos)']), unit='m')
             df.at[idx, 'fim'] = fim
             df.at[idx, 'not_sequence'] = True
             current_dt = fim
-
-    """     
-    for idx, row in df.iterrows():
-        job_not_before_date = row['not_before_date']
-
-        if pd.Timestamp(init_dt).date() >= pd.Timestamp(job_not_before_date).date():
-            df.at[idx, 'inicio'] = init_dt
-            fim  = init_dt + pd.to_timedelta(row['Tempo Total (minutos)'], unit='m')
-            df.at[idx, 'fim'] = fim
-            init_dt = fim
-    """
     return df
 
+
+def build_kp_macho_data(setup_df):
+    
+    # (kp_macho, resource) -> {"not_setup": [...], "config": str}
+    kp_macho_data: Dict[Tuple[str, str], Dict] = {}
+
+    for _, row in setup_df.iterrows():
+        
+        macho_info = re.sub(r"[A-Za-z]+", "", str(row["_kp_macho"]).replace(" ", ""))
+
+        if "/" in macho_info:
+            parts = macho_info.split("/")
+            for i, left in enumerate(parts):
+                not_setup = [p for j, p in enumerate(parts) if j != i]
+                kp_macho_data[(left, row["recurso"])] = {"not_setup": not_setup, "config": row["configuracao"]}
+        else:
+            kp_macho_data[(macho_info, row["recurso"])] = {"not_setup": [], "config": row["configuracao"]}
+
+    return kp_macho_data
+
+# Função responsável por calcular métricas como
+# 1. Quantia de jobs atrasados
+def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
+
+    metrics_df = {}
+    # Calculando quantia de jobs em atraso
+    mask_lateness = (df['fim'].dt.date > df['deadline'].dt.date)
+    df_lateness = df.loc[mask_lateness].copy()
+
+    total_setup_time = 0
+    # Calculando tempo de setup total
+    for (process, resource), current_df in df.groupby(["processo", "recurso"], sort=False):
+        sorted_df = current_df.sort_values(by=['inicio'])
+        
+        for idx, row in sorted_df.iterrows():
+            if not idx:
+                continue
+            print(row)
+            p_macho = row.iloc[idx - 1]['kp_macho']
+            c_macho = row.iloc[idx]['kp_macho']
+
+            # Colentando informacao sobre o macho anterior
+            p_macho_data = kp_macho_data[(p_macho, resource)]
+
+            # Se o macho atual nao esta no not setups do macho anterior, logo tem setup
+            if c_macho not in p_macho_data['not_setups']:
+                p_config = p_macho['config']
+                c_config = c_macho['config']
+
+                mask_setup = (setup_times_df['from_config'] == p_config & setup_times_df['to_config'] == c_config & setup_times_df['recurso'] == resource)
+                time = int(setup_times_df.loc[mask_setup]['setup_time_min'])
+                total_setup_time += time
+
+
+
+
+    metrics_df['atrasados'] = df_lateness.shape[0]
+    metrics_df['total_setup_time'] = total_setup_time
+
+    return metrics_df
 
 def main():
     parser = argparse.ArgumentParser()
@@ -74,7 +134,29 @@ def main():
 
     init_date = args.init_date
     
-    demand_df = pd.read_csv(file_path, parse_dates=['not_before_date', 'deadline'])
+    demand_df = pd.read_csv(
+    file_path,
+    parse_dates=['not_before_date', 'deadline'],
+    converters={'processo': normalize_string,
+                'recurso': normalize_string,
+                'Tempo Total (minutos)': lambda x: str(x).strip()}
+    )
+    # 2) Higienizar e converter a minutos (não numérico -> NaN)
+    tempo_raw = demand_df['Tempo Total (minutos)'].str.replace('.', '', regex=False)   # remove milhar
+    tempo_raw = tempo_raw.str.replace(',', '.', regex=False)                           # vírgula -> ponto
+    demand_df['Tempo Total (minutos)'] = pd.to_numeric(tempo_raw, errors='coerce')
+
+    # 3) Remover linhas inválidas (ex.: '  -   ') ou sem valor
+    mask_invalid = demand_df['Tempo Total (minutos)'].isna()
+    if mask_invalid.any():
+        # opcional: logar quantas foram removidas
+        print(f"Removendo {mask_invalid.sum()} linha(s) com 'Tempo Total (minutos)' inválido(s).")
+    demand_df = demand_df.loc[~mask_invalid].copy()
+
+    setup_df = pd.read_csv(dir_path / 'setup.csv', converters={'recurso': normalize_string})
+    kp_macho_data = build_kp_macho_data(setup_df)
+    setup_times_df = pd.read_csv(dir_path / 'setup_times.csv')
+    
     demand_df['not_before_date'] = pd.to_datetime(demand_df['not_before_date'], dayfirst=True, errors='coerce')
     
     # Constroi o range de dias
@@ -90,24 +172,26 @@ def main():
     mask = (demand_df['deadline'] < pd.Timestamp(init_date))
     demand_df.loc[mask, 'deadline'] = init_date
 
-    violations_per_machine = []
+    sequence_solution = []
     # Agrupando por processo e recurso
     for (process, resource), current_df in demand_df.groupby(["processo", "recurso"], sort=False):
+        
+        if process== 'pepset': continue
         
         # Ordenação dos jobs em ordem crescente de deadline e caso haja empate por ordenacao
         current_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
         
         current_df = calculate_init_end_singleMachine(current_df, work_days)
-        
 
-        current_df['deadline_violation'] = current_df['fim'].dt.date > current_df['deadline'].dt.date
-        violations_per_machine.append(current_df)
+        sequence_solution.append(current_df)
 
-    path_output = dir_path / "violations.csv"
-    violations_df = pd.concat(violations_per_machine, ignore_index=True)
-    violations_df.to_csv(path_output, index=False)
+    path_output = dir_path / "sequence_solution.csv"
+    sequence_solution_df = pd.concat(sequence_solution, ignore_index=True)
+    sequence_solution_df.to_csv(path_output, index=False)
 
 
+    metrics_df = calculate_metrics(sequence_solution_df, kp_macho_data, setup_times_df)
+    print(metrics_df)
 
 if __name__ == '__main__':
     main()

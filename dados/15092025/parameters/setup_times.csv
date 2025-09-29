@@ -1,0 +1,6 @@
+de_config,para_config,setup_time_min,recurso
+A,A,10,sopradora
+A,B,30,sopradora
+B,A,30,sopradora
+B,B,10,sopradora
+A,A,7,vibrado
