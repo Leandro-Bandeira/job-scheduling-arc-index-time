@@ -76,30 +76,43 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
     mask_lateness = (df['fim'].dt.date > df['deadline'].dt.date)
     df_lateness = df.loc[mask_lateness].copy()
 
+
     total_setup_time = 0
     # Calculando tempo de setup total
     for (process, resource), current_df in df.groupby(["processo", "recurso"], sort=False):
-        sorted_df = current_df.sort_values(by=['inicio'])
+        if resource not in ['vibrado', 'sopradora']:
+            continue
+
+        sorted_df = current_df.sort_values(by=['inicio']).reset_index(drop=True)
         
-        for idx, row in sorted_df.iterrows():
+        for idx in range(1, len(sorted_df)):
             if not idx:
                 continue
-            print(row)
-            p_macho = row.iloc[idx - 1]['kp_macho']
-            c_macho = row.iloc[idx]['kp_macho']
+            p_macho = str(int(sorted_df.iloc[idx - 1]['_kf_macho']))
+            c_macho = str(int(sorted_df.iloc[idx]['_kf_macho']))
+            
+            p_key = (p_macho, resource)
+            c_key = (c_macho, resource)
 
             # Colentando informacao sobre o macho anterior
-            p_macho_data = kp_macho_data[(p_macho, resource)]
+            p_info = kp_macho_data.get(p_key)
+            c_info = kp_macho_data.get(c_key)
+            
+            if p_info:
+                if c_macho not in p_info['not_setup']:
 
-            # Se o macho atual nao esta no not setups do macho anterior, logo tem setup
-            if c_macho not in p_macho_data['not_setups']:
-                p_config = p_macho['config']
-                c_config = c_macho['config']
+                    mask_setup = (
+                        (setup_times_df['de_config'] == p_info['config']) &
+                        (setup_times_df['para_config'] == c_info['config']) &
+                        (setup_times_df['recurso'] == resource)
+                    )
 
-                mask_setup = (setup_times_df['from_config'] == p_config & setup_times_df['to_config'] == c_config & setup_times_df['recurso'] == resource)
-                time = int(setup_times_df.loc[mask_setup]['setup_time_min'])
-                total_setup_time += time
-
+                    if mask_setup.any():
+                        # se houver múltiplas linhas, pega a primeira
+                        setup_min = setup_times_df.loc[mask_setup, 'setup_time_min'].iloc[0]
+                        # garante inteiro
+                        setup_min = int(setup_min)
+                        total_setup_time += setup_min
 
 
 
@@ -172,25 +185,25 @@ def main():
     mask = (demand_df['deadline'] < pd.Timestamp(init_date))
     demand_df.loc[mask, 'deadline'] = init_date
 
-    sequence_solution = []
+    real_sequence_solution = []
     # Agrupando por processo e recurso
     for (process, resource), current_df in demand_df.groupby(["processo", "recurso"], sort=False):
         
         if process== 'pepset': continue
         
         # Ordenação dos jobs em ordem crescente de deadline e caso haja empate por ordenacao
-        current_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
+        real_solution_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
         
-        current_df = calculate_init_end_singleMachine(current_df, work_days)
+        real_solution_df = calculate_init_end_singleMachine(real_solution_df, work_days)
 
-        sequence_solution.append(current_df)
+        real_sequence_solution.append(real_solution_df)
 
     path_output = dir_path / "sequence_solution.csv"
-    sequence_solution_df = pd.concat(sequence_solution, ignore_index=True)
-    sequence_solution_df.to_csv(path_output, index=False)
+    real_sequence_solution_df = pd.concat(real_sequence_solution, ignore_index=True)
+    real_sequence_solution_df.to_csv(path_output, index=False)
 
 
-    metrics_df = calculate_metrics(sequence_solution_df, kp_macho_data, setup_times_df)
+    metrics_df = calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df)
     print(metrics_df)
 
 if __name__ == '__main__':
