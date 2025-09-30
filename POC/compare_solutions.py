@@ -78,8 +78,10 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
 
 
     total_setup_time = 0
+
     # Calculando tempo de setup total
-    for (process, resource), current_df in df.groupby(["processo", "recurso"], sort=False):
+    for machine, current_df in df.groupby("maquina", sort=False):
+        process, resource = machine.split("_")
         if resource not in ['vibrado', 'sopradora']:
             continue
 
@@ -121,6 +123,80 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
 
     return metrics_df
 
+def compare_metrics(real: dict, sched: dict) -> dict:
+    """
+    Compara métricas entre a solução REAL e a solução SCHEDULING.
+    Retorna um dicionário com vencedor por métrica e um veredito geral.
+
+    Regras (padrão do seu caso):
+      - 'atrasados': quanto MENOR, melhor
+      - 'total_setup_time': quanto MENOR, melhor
+    """
+    # direção do "melhor": -1 significa menor é melhor, +1 maior é melhor
+    direction = {
+        'atrasados': -1,
+        'total_setup_time': -1,
+    }
+
+    result = {
+        'por_metrica': {},
+        'placar': {'real': 0, 'scheduling': 0, 'empates': 0},
+        'veredito_geral': None
+    }
+
+    for m, dir_ in direction.items():
+        r_val = real.get(m)
+        s_val = sched.get(m)
+
+        # trata ausências
+        if r_val is None and s_val is None:
+            winner = 'empate'
+        elif r_val is None:
+            winner = 'scheduling'
+        elif s_val is None:
+            winner = 'real'
+        else:
+            if r_val == s_val:
+                winner = 'empate'
+            else:
+                # menor é melhor (dir_ = -1) ou maior é melhor (dir_ = +1)
+                is_real_better = (r_val < s_val) if dir_ < 0 else (r_val > s_val)
+                winner = 'real' if is_real_better else 'scheduling'
+
+        result['por_metrica'][m] = {
+            'real': r_val,
+            'scheduling': s_val,
+            'melhor': winner
+        }
+
+        if winner == 'real':
+            result['placar']['real'] += 1
+        elif winner == 'scheduling':
+            result['placar']['scheduling'] += 1
+        else:
+            result['placar']['empates'] += 1
+
+    # Veredito geral (quem venceu mais métricas)
+    if result['placar']['real'] > result['placar']['scheduling']:
+        result['veredito_geral'] = 'real'
+    elif result['placar']['scheduling'] > result['placar']['real']:
+        result['veredito_geral'] = 'scheduling'
+    else:
+        # Desempate (soma ponderada simples: normaliza e compara)
+        # Menor é melhor para ambas no seu caso
+        def safe(v): return float('inf') if v is None else float(v)
+        r_score = safe(real.get('atrasados')) + safe(real.get('total_setup_time'))/60.0
+        s_score = safe(sched.get('atrasados')) + safe(sched.get('total_setup_time'))/60.0
+        if r_score < s_score:
+            result['veredito_geral'] = 'real'
+        elif s_score < r_score:
+            result['veredito_geral'] = 'scheduling'
+        else:
+            result['veredito_geral'] = 'empate'
+
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -137,15 +213,31 @@ def main():
         help='Dia de inicio do processamento.'
     )
 
+    parser.add_argument(
+        '--scheduling-solution',
+        type=pathlib.Path,
+        required=True,
+        help='Caminho do arquivo da solucao do scheduling.'
+    )
     args = parser.parse_args()
+
     if not args.base_data or not args.init_date:
         print(f"Adicione os dados da simulação real em --base-data")
         exit()
     
     file_path = pathlib.Path(args.base_data)
+    scheduling_solution_path = pathlib.Path(args.scheduling_solution)
+
     dir_path = file_path.parent 
 
     init_date = args.init_date
+    
+    scheduling_solution_df = pd.read_csv(
+        scheduling_solution_path,
+        parse_dates=['not_before_date', 'deadline', 'inicio', 'fim']
+    )
+    
+    scheduling_solution_df = scheduling_solution_df.dropna(subset=['inicio']).copy()
     
     demand_df = pd.read_csv(
     file_path,
@@ -185,9 +277,13 @@ def main():
     mask = (demand_df['deadline'] < pd.Timestamp(init_date))
     demand_df.loc[mask, 'deadline'] = init_date
 
+    demand_df['maquina'] = (demand_df['processo'] + '_' + demand_df['recurso'])
+
     real_sequence_solution = []
     # Agrupando por processo e recurso
-    for (process, resource), current_df in demand_df.groupby(["processo", "recurso"], sort=False):
+    for machine, current_df in demand_df.groupby("maquina", sort=False):
+
+        process, resource = machine.split("_")
         
         if process== 'pepset': continue
         
@@ -203,8 +299,18 @@ def main():
     real_sequence_solution_df.to_csv(path_output, index=False)
 
 
-    metrics_df = calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df)
-    print(metrics_df)
+    metrics_real_solution_df = calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df)
+    metrics_scheduling_solution_df = calculate_metrics(scheduling_solution_df, kp_macho_data, setup_times_df)
+
+    cmp = compare_metrics(metrics_real_solution_df, metrics_scheduling_solution_df)
+
+    print("\n== Comparação por métrica ==")
+    for m, info in cmp['por_metrica'].items():
+        print(f"- {m}: real={info['real']} | sched={info['scheduling']} → melhor: {info['melhor']}")
+
+    p = cmp['placar']
+    print(f"\nPlacar: real={p['real']} | scheduling={p['scheduling']} | empates={p['empates']}")
+    print(f"Veredito geral: {cmp['veredito_geral']}")
 
 if __name__ == '__main__':
     main()
