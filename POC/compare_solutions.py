@@ -60,141 +60,159 @@ def build_kp_macho_data(setup_df):
         if "/" in macho_info:
             parts = macho_info.split("/")
             for i, left in enumerate(parts):
-                not_setup = [p for j, p in enumerate(parts) if j != i]
-                kp_macho_data[(left, row["recurso"])] = {"not_setup": not_setup, "config": row["configuracao"]}
+                not_setup = [int(p) for j, p in enumerate(parts)] + [i]
+                kp_macho_data[(int(left), row["recurso"])] = {"not_setup": not_setup, "config": row["configuracao"]}
         else:
-            kp_macho_data[(macho_info, row["recurso"])] = {"not_setup": [], "config": row["configuracao"]}
-
+            kp_macho_data[(int(macho_info), row["recurso"])] = {"not_setup": [int(macho_info)], "config": row["configuracao"]}
     return kp_macho_data
 
 # Função responsável por calcular métricas como
 # 1. Quantia de jobs atrasados
 def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
 
-    metrics_df = {}
-    # Calculando quantia de jobs em atraso
-    mask_lateness = (df['fim'].dt.date > df['deadline'].dt.date)
-    df_lateness = df.loc[mask_lateness].copy()
-
-
-    total_setup_time = 0
-
-    # Calculando tempo de setup total
+    metrics = []
     for machine, current_df in df.groupby("maquina", sort=False):
         process, resource = machine.split("_")
-        if resource not in ['vibrado', 'sopradora']:
+        if resource not in ['sopradora']:
             continue
 
-        sorted_df = current_df.sort_values(by=['inicio']).reset_index(drop=True)
-        
-        for idx in range(1, len(sorted_df)):
-            if not idx:
-                continue
-            p_macho = str(int(sorted_df.iloc[idx - 1]['_kf_macho']))
-            c_macho = str(int(sorted_df.iloc[idx]['_kf_macho']))
-            
-            p_key = (p_macho, resource)
-            c_key = (c_macho, resource)
+        # cria uma coluna de dia baseada no inicio (ajuste se preferir 'fim' ou 'deadline')
+        current_df = current_df.copy()
+        current_df["dia"] = current_df["inicio"].dt.date
 
-            # Colentando informacao sobre o macho anterior
-            p_info = kp_macho_data.get(p_key)
-            c_info = kp_macho_data.get(c_key)
-            
-            if p_info:
-                if c_macho not in p_info['not_setup']:
+        for dia, day_df in current_df.groupby("dia", sort=False):
 
+            # atrasados no dia (fim > deadline)
+            mask_lateness = (day_df['fim'].dt.date > day_df['deadline'].dt.date)
+            atrasados = int(mask_lateness.sum())
+
+            # setup do dia, ordenando por inicio
+            sorted_df = day_df.sort_values(by='inicio').reset_index(drop=True)
+
+            total_setup_time = 0
+            for idx in range(1, len(sorted_df)):
+                # macho anterior (p_) e atual (c_)
+                p_macho = int(sorted_df.iloc[idx - 1]['_kf_macho'])
+                c_macho = int(sorted_df.iloc[idx]['_kf_macho'])
+
+                p_key = (p_macho, resource)
+                c_key = (c_macho, resource)
+
+                p_info = kp_macho_data.get(p_key)
+                c_info = kp_macho_data.get(c_key)
+
+                # precisa ter info para ambos
+                if not p_info or not c_info:
+                    continue
+
+                # se trocar para um macho que NÃO está na lista de "sem setup"
+                if c_macho not in p_info.get('not_setup', []):
                     mask_setup = (
                         (setup_times_df['de_config'] == p_info['config']) &
                         (setup_times_df['para_config'] == c_info['config']) &
                         (setup_times_df['recurso'] == resource)
                     )
+                    #print(f"from: {p_key} to {c_key}")
+                    #print(p_info.get('not_setup'))
 
                     if mask_setup.any():
-                        # se houver múltiplas linhas, pega a primeira
+                        # se houver múltiplas linhas, pega a primeira (ou poderia usar .min())
                         setup_min = setup_times_df.loc[mask_setup, 'setup_time_min'].iloc[0]
-                        # garante inteiro
-                        setup_min = int(setup_min)
-                        total_setup_time += setup_min
+                        total_setup_time += int(setup_min)
 
+            total_uso = (day_df['fim'] - day_df['inicio']).dt.total_seconds().sum() // 60
+            metrics.append({
+                'machine_name': machine,
+                'dia': dia,                
+                'setup_time': total_setup_time,
+                'atrasados': atrasados,
+                'total_uso': total_uso
+            })
 
-
-    metrics_df['atrasados'] = df_lateness.shape[0]
-    metrics_df['total_setup_time'] = total_setup_time
-
+    metrics_df = pd.DataFrame(metrics).sort_values(['machine_name', 'dia']).reset_index(drop=True)
     return metrics_df
 
-def compare_metrics(real: dict, sched: dict) -> dict:
+
+def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame):
     """
-    Compara métricas entre a solução REAL e a solução SCHEDULING.
-    Retorna um dicionário com vencedor por métrica e um veredito geral.
-
-    Regras (padrão do seu caso):
-      - 'atrasados': quanto MENOR, melhor
-      - 'total_setup_time': quanto MENOR, melhor
+    Compara métricas de setup entre 'real' e 'scheduling' por máquina e dia.
+    
+    Delta de setup (ganho por dia) = setup_real - setup_sched.
+    Valores negativos indicam que o scheduling gastou MENOS setup (ou seja, melhor).
+    
+    Parâmetros
+    ----------
+    machines : list[str]
+        Lista de máquinas a considerar (filtra as duas tabelas).
+    metrics_real_df : pd.DataFrame
+        DataFrame com colunas ['machine_name', 'dia', 'setup_time', ...].
+    metrics_sched_df : pd.DataFrame
+        DataFrame com as mesmas colunas acima.
+    
+    Retorna
+    -------
+    per_day_diff : pd.DataFrame
+        Linhas por (machine_name, dia) com colunas:
+        ['machine_name', 'dia', 'setup_real', 'setup_sched', 'delta_setup'].
+    avg_by_machine : pd.DataFrame
+        Linhas por machine_name com a média do delta por dia:
+        ['machine_name', 'avg_daily_delta_setup'].
+    overall_avg : float
+        Média global do delta por dia considerando todas as máquinas/dias.
     """
-    # direção do "melhor": -1 significa menor é melhor, +1 maior é melhor
-    direction = {
-        'atrasados': -1,
-        'total_setup_time': -1,
-    }
 
-    result = {
-        'por_metrica': {},
-        'placar': {'real': 0, 'scheduling': 0, 'empates': 0},
-        'veredito_geral': None
-    }
+    # 1) Filtra pelas máquinas pedidas (se 'machines' estiver vazia, não filtra)
+    subset_real = metrics_real_df.copy()
+    subset_sched = metrics_sched_df.copy()
 
-    for m, dir_ in direction.items():
-        r_val = real.get(m)
-        s_val = sched.get(m)
+    subset_real = subset_real[subset_real['machine_name'].isin(machines)]
+    subset_sched = subset_sched[subset_sched['machine_name'].isin(machines)]
 
-        # trata ausências
-        if r_val is None and s_val is None:
-            winner = 'empate'
-        elif r_val is None:
-            winner = 'scheduling'
-        elif s_val is None:
-            winner = 'real'
-        else:
-            if r_val == s_val:
-                winner = 'empate'
-            else:
-                # menor é melhor (dir_ = -1) ou maior é melhor (dir_ = +1)
-                is_real_better = (r_val < s_val) if dir_ < 0 else (r_val > s_val)
-                winner = 'real' if is_real_better else 'scheduling'
+    # 2) Agrega por máquina e dia (caso existam múltiplas linhas)
+    real_agg = (
+    subset_real
+    .groupby(['machine_name', 'dia'], as_index=False, sort=False)
+    .agg({'setup_time': 'sum', 'total_uso': 'sum'})
+    .rename(columns={'setup_time': 'setup_real', 'total_uso': 'uso_real'})
+    )
 
-        result['por_metrica'][m] = {
-            'real': r_val,
-            'scheduling': s_val,
-            'melhor': winner
-        }
+    sched_agg = (
+        subset_sched
+        .groupby(['machine_name', 'dia'], as_index=False, sort=False)
+        .agg({'setup_time': 'sum', 'total_uso': 'sum'})
+        .rename(columns={'setup_time': 'setup_sched', 'total_uso': 'uso_sched'})
+    )
 
-        if winner == 'real':
-            result['placar']['real'] += 1
-        elif winner == 'scheduling':
-            result['placar']['scheduling'] += 1
-        else:
-            result['placar']['empates'] += 1
+    # 3) Junta as duas visões por máquina+dia (outer para não perder dias exclusivos de um lado)
+    per_day_diff = pd.merge(
+        real_agg, sched_agg,
+        on=['machine_name', 'dia'],
+        how='outer'
+    )
 
-    # Veredito geral (quem venceu mais métricas)
-    if result['placar']['real'] > result['placar']['scheduling']:
-        result['veredito_geral'] = 'real'
-    elif result['placar']['scheduling'] > result['placar']['real']:
-        result['veredito_geral'] = 'scheduling'
-    else:
-        # Desempate (soma ponderada simples: normaliza e compara)
-        # Menor é melhor para ambas no seu caso
-        def safe(v): return float('inf') if v is None else float(v)
-        r_score = safe(real.get('atrasados')) + safe(real.get('total_setup_time'))/60.0
-        s_score = safe(sched.get('atrasados')) + safe(sched.get('total_setup_time'))/60.0
-        if r_score < s_score:
-            result['veredito_geral'] = 'real'
-        elif s_score < r_score:
-            result['veredito_geral'] = 'scheduling'
-        else:
-            result['veredito_geral'] = 'empate'
+    # Preenche faltantes como 0 (se um lado não teve produção naquele dia)
+    per_day_diff['setup_real'] = per_day_diff['setup_real'].fillna(0).astype(int)
+    per_day_diff['setup_sched'] = per_day_diff['setup_sched'].fillna(0).astype(int)
+    per_day_diff['uso_real'] = per_day_diff['uso_real'].fillna(0).astype(int)
+    per_day_diff['uso_sched'] = per_day_diff['uso_sched'].fillna(0).astype(int)
 
-    return result
+    # 5) Delta diário (ganho): real - scheduling
+    per_day_diff['delta_setup'] = per_day_diff['setup_real'] - per_day_diff['setup_sched']
+
+    
+    # 6) Média do delta por dia para cada máquina
+    avg_by_machine = (
+        per_day_diff
+        .groupby('machine_name', as_index=False)['delta_setup']
+        .mean()
+        .rename(columns={'delta_setup': 'avg_daily_delta_setup'})
+        .sort_values('machine_name', kind='stable')
+    )
+
+    # 7) Média global
+    overall_avg = float(per_day_diff['delta_setup'].mean()) if not per_day_diff.empty else 0.0
+
+    return per_day_diff.sort_values(['machine_name', 'dia']).reset_index(drop=True), avg_by_machine, overall_avg
 
 
 def main():
@@ -285,8 +303,8 @@ def main():
 
         process, resource = machine.split("_")
         
-        if process== 'pepset': continue
-        
+        if resource not in ['sopradora']:
+            continue
         # Ordenação dos jobs em ordem crescente de deadline e caso haja empate por ordenacao
         real_solution_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
         
@@ -298,19 +316,24 @@ def main():
     real_sequence_solution_df = pd.concat(real_sequence_solution, ignore_index=True)
     real_sequence_solution_df.to_csv(path_output, index=False)
 
+    
+    metrics_real_solution_df = pd.DataFrame(calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df))
+    metrics_scheduling_solution_df = pd.DataFrame(calculate_metrics(scheduling_solution_df, kp_macho_data, setup_times_df))
+    
+    
+    machines = demand_df['maquina'].unique().tolist()
 
-    metrics_real_solution_df = calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df)
-    metrics_scheduling_solution_df = calculate_metrics(scheduling_solution_df, kp_macho_data, setup_times_df)
+    
+    per_day_diff, avg_by_machine, overall_avg = compare_metrics(
+        machines,
+        metrics_real_solution_df,
+        metrics_scheduling_solution_df
+    )
 
-    cmp = compare_metrics(metrics_real_solution_df, metrics_scheduling_solution_df)
+    print(per_day_diff.head())
+    print(avg_by_machine)
+    print("Média global do ganho diário de setup:", overall_avg)
 
-    print("\n== Comparação por métrica ==")
-    for m, info in cmp['por_metrica'].items():
-        print(f"- {m}: real={info['real']} | sched={info['scheduling']} → melhor: {info['melhor']}")
-
-    p = cmp['placar']
-    print(f"\nPlacar: real={p['real']} | scheduling={p['scheduling']} | empates={p['empates']}")
-    print(f"Veredito geral: {cmp['veredito_geral']}")
-
+    
 if __name__ == '__main__':
     main()
