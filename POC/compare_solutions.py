@@ -194,8 +194,9 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
 
 def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame, time_capacity_df: pd.DataFrame):
     """
-    Compara métricas de setup entre 'real' e 'scheduling' por máquina e dia.
-    Adiciona % de ganho em relação à capacidade máxima (max_dia) e efetiva (min_dia).
+    Compara métricas de setup e atraso entre 'real' e 'scheduling' por máquina e dia.
+    Adiciona % de ganho de tempo em relação à capacidade máxima (max_dia).
+    Retorno compatível com a assinatura anterior.
     """
 
     # 1) Filtra (se 'machines' foi passado)
@@ -206,87 +207,90 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         subset_real  = metrics_real_df.copy()
         subset_sched = metrics_sched_df.copy()
 
-    # 2) Agrega por máquina e dia
+    # 2) Agrega por máquina e dia (setup_time, total_uso, atrasados)
     real_agg = (
         subset_real
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
-        .agg({'setup_time': 'sum', 'total_uso': 'sum'})
-        .rename(columns={'setup_time': 'setup_real', 'total_uso': 'uso_real'})
+        .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum'})
+        .rename(columns={
+            'setup_time': 'setup_real',
+            'total_uso':  'uso_real',
+            'atrasados':  'atrasados_real'
+        })
     )
+
     sched_agg = (
         subset_sched
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
-        .agg({'setup_time': 'sum', 'total_uso': 'sum'})
-        .rename(columns={'setup_time': 'setup_sched', 'total_uso': 'uso_sched'})
+        .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum'})
+        .rename(columns={
+            'setup_time': 'setup_sched',
+            'total_uso':  'uso_sched',
+            'atrasados':  'atrasados_sched'
+        })
     )
 
     # 3) Outer join por máquina+dia
     per_day_diff = pd.merge(real_agg, sched_agg, on=['machine_name', 'dia'], how='outer')
 
-    # 4) Preenche faltantes
-    for c in ['setup_real','setup_sched','uso_real','uso_sched']:
-        per_day_diff[c] = per_day_diff[c].fillna(0).astype(int)
+    # 4) Preenche faltantes e tipa
+    for c in ['setup_real','setup_sched','uso_real','uso_sched','atrasados_real','atrasados_sched']:
+        per_day_diff[c] = pd.to_numeric(per_day_diff[c], errors='coerce').fillna(0)
+        # atrasos são contagens inteiras; usos e setup são minutos (int também ajuda)
+        if 'atrasados' in c:
+            per_day_diff[c] = per_day_diff[c].astype(int)
+        else:
+            per_day_diff[c] = per_day_diff[c].astype(int)
 
-    # 5) Delta (minutos de setup economizados; positivo = melhor)
-    per_day_diff['delta_setup'] = per_day_diff['setup_real'] - per_day_diff['setup_sched']
+    # 5) Deltas (positivo = melhor)
+    per_day_diff['delta_setup']     = per_day_diff['setup_real']     - per_day_diff['setup_sched']
+    per_day_diff['delta_atrasados'] = per_day_diff['atrasados_real'] - per_day_diff['atrasados_sched']
 
     # ---------- MERGE COM CAPACIDADE USANDO O SUFIXO APÓS O ÚLTIMO "_" ----------
     def _norm(s: str) -> str:
-        # normaliza para facilitar matching
         return (
             str(s).lower().strip()
-            .replace(' ', '')
-            .replace('-', '')
-            .replace('/', '')
+            .replace(' ', '').replace('-', '').replace('/', '')
         )
 
-    # chave vinda do per_day_diff: pega o sufixo após o ÚLTIMO "_"
     per_day_diff['merge_key'] = (
-        per_day_diff['machine_name']
-        .astype(str)
-        .str.rsplit('_', n=1).str[-1]
-        .map(_norm)
+        per_day_diff['machine_name'].astype(str).str.rsplit('_', n=1).str[-1].map(_norm)
     )
 
     cap_df = time_capacity_df.copy()
-
-    # aceita tanto 'recurso' quanto 'machine_name' como coluna de nome
     if 'recurso' in cap_df.columns and 'machine_name' not in cap_df.columns:
         cap_df = cap_df.rename(columns={'recurso': 'machine_name'})
 
-    # normaliza colunas numéricas e cria merge_key
-    for c in ['max_dia']:
-        if c in cap_df.columns:
-            cap_df[c] = pd.to_numeric(cap_df[c], errors='coerce')
+    if 'max_dia' in cap_df.columns:
+        cap_df['max_dia'] = pd.to_numeric(cap_df['max_dia'], errors='coerce')
 
     cap_df['merge_key'] = cap_df['machine_name'].map(_norm)
 
-    # junta por merge_key (não mexe no nome original)
     per_day_diff = per_day_diff.merge(
         cap_df[['merge_key','max_dia']],
         on='merge_key', how='left'
     )
 
-    # 7) Percentuais por máquina e dia (em %)
+    # 7) Percentual de ganho de tempo (vs capacidade máxima do dia)
     per_day_diff['time_gain_max'] = (per_day_diff['delta_setup'] / per_day_diff['max_dia']) * 100
+    per_day_diff['time_gain_max'] = per_day_diff['time_gain_max'].replace([np.inf, -np.inf], np.nan)
 
-    per_day_diff[['time_gain_max']] = per_day_diff[['time_gain_max']].replace([np.inf, -np.inf], np.nan)
-
-    # 8) Médias por máquina (mantendo o nome completo da máquina do per_day_diff)
+    # 8) Médias por máquina (inclui delta de atrasos)
     avg_by_machine = (
         per_day_diff
         .groupby('machine_name', as_index=False)
         .agg(
             avg_daily_delta_setup=('delta_setup','mean'),
-            avg_daily_time_gain_max=('time_gain_max','mean')
+            avg_daily_time_gain_max=('time_gain_max','mean'),
+            avg_daily_delta_atrasados=('delta_atrasados','mean')
         )
         .sort_values('machine_name', kind='stable')
     )
 
-    # 9) Média global (minutos)
+    # 9) Média global (minutos de setup)
     overall_avg = float(per_day_diff['delta_setup'].mean()) if not per_day_diff.empty else 0.0
 
-    # organiza e remove a chave auxiliar
+    # organiza
     per_day_diff = (
         per_day_diff
         .drop(columns=['merge_key'])
