@@ -4,12 +4,16 @@ import pathlib
 
 
 import pandas as pd
-
+import numpy as np
 from unidecode import unidecode
 
 from datetime import datetime, timedelta
 from typing import Dict, Tuple
 
+weekday_idx = {
+    "segunda": 0, "terca": 1, "terça": 1, "quarta": 2,
+    "quinta": 3, "sexta": 4, "sabado": 5, "sábado": 5, "domingo": 6
+}
 
 def normalize_string(value) -> str:
     """Normaliza string: remove acentos, minúsculas, sem espaços."""
@@ -17,13 +21,25 @@ def normalize_string(value) -> str:
         return ""
     return unidecode(str(value)).lower().replace(" ", "")
 
+def parse_turnos_to_list(value):
+    if pd.isna(value):
+        return []
+    if value == 'geral':
+        return [0]
+    
+    return [int(x.strip()) for x in str(value).split(',') if x.strip().isdigit()]
+def get_total_minutes(hora_str):
+    hora = datetime.strptime(hora_str, "%H:%M")
+    total_minutes = hora.hour * 60 + hora.minute
+    return total_minutes
+
 # Função responsavel por calcular o inicio e fim de um dataframe
 # 1. Df é um dataframe ordenado em prioridade de deadline e ordenação
 # 2. work_days é o conjunto de dias possiveis de trabalho dado o dia inicial ate a sexta-feira da mesma semana
 # 3. Para cada linha do dataframe, caso seu not_before_date seja menor ou igual ao dia no sequenciamento, calcula-se o inicio e o fim
 # 4. Se no fim existirem linhas que não foram calculadas inicio e fim, é porque não é possível produzir o job naquela semana
 
-def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list) -> pd.DataFrame:    
+def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list, machine_shift, turnos_df, current_machine_time_capacity) -> pd.DataFrame:    
 
     df['not_sequence'] = False # Define que nenhum job foi sequenciado
     
@@ -32,19 +48,62 @@ def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list) -> pd.Data
     # Cria o sequenciamento para esses jobs e adiciona uma nova coluna chamada sequenciado
     # Mesma coisa para cada dia
     for day in work_days:
-        current_dt = day
         day_date = pd.Timestamp(day).date()
+        base_dt = day
+        
+        day_work_shifts = list()
+        range_work_shifts = list()
+        for _, row in turnos_df.iterrows():
+            if row['turno'] == 'geral': continue
+            if int(row['turno']) in machine_shift.iloc[0] and weekday_idx[row['dia']] == day_date.weekday():
+                ini  = get_total_minutes(row["inicio"])
+                brk1 = get_total_minutes(row["intervalo_inicio"])
+                brk2 = get_total_minutes(row["intervalo_fim"])
+                end  = get_total_minutes(row["fim"])
+
+                day_work_shifts += [ini, brk2]
+                range_work_shifts.append((ini, brk1))
+                range_work_shifts.append((brk2, end))
+
+        day_work_shifts.sort()
+        
+        
         mask = (df['not_before_date'].dt.date <= day_date) & (~df['not_sequence'])
         current_df = df.loc[mask]
 
+        t = base_dt + timedelta(minutes=day_work_shifts.pop(0))
+        total_use_day = 0
         for idx, row in current_df.iterrows():
-            df.at[idx, 'inicio'] = current_dt
             if row['Tempo Total (minutos)'] == '-':
                 row['Tempo Total (minutos)'] = 1
-            fim  = current_dt + pd.to_timedelta(int(row['Tempo Total (minutos)']), unit='m')
-            df.at[idx, 'fim'] = fim
-            df.at[idx, 'not_sequence'] = True
-            current_dt = fim
+
+            p = int(row['Tempo Total (minutos)'])
+            can_work = False
+            delta_min = (t - base_dt).total_seconds() // 60            
+
+            for (start, end) in range_work_shifts:
+                if delta_min >= start and delta_min <= end and  delta_min + p <= end:
+                    can_work = True
+                    break
+
+            if can_work:
+                start_dt = t
+                end_dt   = t + timedelta(minutes=p)
+            else:
+                start_dt = base_dt + timedelta(minutes=day_work_shifts.pop(0))
+                end_dt = start_dt + timedelta(minutes=p)
+            
+            if total_use_day <= current_machine_time_capacity:
+                df.at[idx, 'inicio'] = start_dt.isoformat(timespec='minutes')
+                df.at[idx, 'fim']   = end_dt.isoformat(timespec='minutes')
+                df.at[idx, 'not_sequence'] = True
+                total_use_day += p
+            else:
+                break
+            t = end_dt
+
+    df['inicio'] = pd.to_datetime(df['inicio'], errors='coerce')
+    df['fim'] = pd.to_datetime(df['fim'], errors='coerce')
     return df
 
 
@@ -133,49 +192,27 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
     return metrics_df
 
 
-def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame):
+def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame, time_capacity_df: pd.DataFrame):
     """
     Compara métricas de setup entre 'real' e 'scheduling' por máquina e dia.
-    
-    Delta de setup (ganho por dia) = setup_real - setup_sched.
-    Valores negativos indicam que o scheduling gastou MENOS setup (ou seja, melhor).
-    
-    Parâmetros
-    ----------
-    machines : list[str]
-        Lista de máquinas a considerar (filtra as duas tabelas).
-    metrics_real_df : pd.DataFrame
-        DataFrame com colunas ['machine_name', 'dia', 'setup_time', ...].
-    metrics_sched_df : pd.DataFrame
-        DataFrame com as mesmas colunas acima.
-    
-    Retorna
-    -------
-    per_day_diff : pd.DataFrame
-        Linhas por (machine_name, dia) com colunas:
-        ['machine_name', 'dia', 'setup_real', 'setup_sched', 'delta_setup'].
-    avg_by_machine : pd.DataFrame
-        Linhas por machine_name com a média do delta por dia:
-        ['machine_name', 'avg_daily_delta_setup'].
-    overall_avg : float
-        Média global do delta por dia considerando todas as máquinas/dias.
+    Adiciona % de ganho em relação à capacidade máxima (max_dia) e efetiva (min_dia).
     """
 
-    # 1) Filtra pelas máquinas pedidas (se 'machines' estiver vazia, não filtra)
-    subset_real = metrics_real_df.copy()
-    subset_sched = metrics_sched_df.copy()
+    # 1) Filtra (se 'machines' foi passado)
+    if machines:
+        subset_real  = metrics_real_df[metrics_real_df['machine_name'].isin(machines)].copy()
+        subset_sched = metrics_sched_df[metrics_sched_df['machine_name'].isin(machines)].copy()
+    else:
+        subset_real  = metrics_real_df.copy()
+        subset_sched = metrics_sched_df.copy()
 
-    subset_real = subset_real[subset_real['machine_name'].isin(machines)]
-    subset_sched = subset_sched[subset_sched['machine_name'].isin(machines)]
-
-    # 2) Agrega por máquina e dia (caso existam múltiplas linhas)
+    # 2) Agrega por máquina e dia
     real_agg = (
-    subset_real
-    .groupby(['machine_name', 'dia'], as_index=False, sort=False)
-    .agg({'setup_time': 'sum', 'total_uso': 'sum'})
-    .rename(columns={'setup_time': 'setup_real', 'total_uso': 'uso_real'})
+        subset_real
+        .groupby(['machine_name', 'dia'], as_index=False, sort=False)
+        .agg({'setup_time': 'sum', 'total_uso': 'sum'})
+        .rename(columns={'setup_time': 'setup_real', 'total_uso': 'uso_real'})
     )
-
     sched_agg = (
         subset_sched
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
@@ -183,36 +220,85 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         .rename(columns={'setup_time': 'setup_sched', 'total_uso': 'uso_sched'})
     )
 
-    # 3) Junta as duas visões por máquina+dia (outer para não perder dias exclusivos de um lado)
-    per_day_diff = pd.merge(
-        real_agg, sched_agg,
-        on=['machine_name', 'dia'],
-        how='outer'
-    )
+    # 3) Outer join por máquina+dia
+    per_day_diff = pd.merge(real_agg, sched_agg, on=['machine_name', 'dia'], how='outer')
 
-    # Preenche faltantes como 0 (se um lado não teve produção naquele dia)
-    per_day_diff['setup_real'] = per_day_diff['setup_real'].fillna(0).astype(int)
-    per_day_diff['setup_sched'] = per_day_diff['setup_sched'].fillna(0).astype(int)
-    per_day_diff['uso_real'] = per_day_diff['uso_real'].fillna(0).astype(int)
-    per_day_diff['uso_sched'] = per_day_diff['uso_sched'].fillna(0).astype(int)
+    # 4) Preenche faltantes
+    for c in ['setup_real','setup_sched','uso_real','uso_sched']:
+        per_day_diff[c] = per_day_diff[c].fillna(0).astype(int)
 
-    # 5) Delta diário (ganho): real - scheduling
+    # 5) Delta (minutos de setup economizados; positivo = melhor)
     per_day_diff['delta_setup'] = per_day_diff['setup_real'] - per_day_diff['setup_sched']
 
-    
-    # 6) Média do delta por dia para cada máquina
+    # ---------- MERGE COM CAPACIDADE USANDO O SUFIXO APÓS O ÚLTIMO "_" ----------
+    def _norm(s: str) -> str:
+        # normaliza para facilitar matching
+        return (
+            str(s).lower().strip()
+            .replace(' ', '')
+            .replace('-', '')
+            .replace('/', '')
+        )
+
+    # chave vinda do per_day_diff: pega o sufixo após o ÚLTIMO "_"
+    per_day_diff['merge_key'] = (
+        per_day_diff['machine_name']
+        .astype(str)
+        .str.rsplit('_', n=1).str[-1]
+        .map(_norm)
+    )
+
+    cap_df = time_capacity_df.copy()
+
+    # aceita tanto 'recurso' quanto 'machine_name' como coluna de nome
+    if 'recurso' in cap_df.columns and 'machine_name' not in cap_df.columns:
+        cap_df = cap_df.rename(columns={'recurso': 'machine_name'})
+
+    # normaliza colunas numéricas e cria merge_key
+    for c in ['max_dia', 'min_dia']:
+        if c in cap_df.columns:
+            cap_df[c] = pd.to_numeric(cap_df[c], errors='coerce')
+
+    cap_df['merge_key'] = cap_df['machine_name'].map(_norm)
+
+    # junta por merge_key (não mexe no nome original)
+    per_day_diff = per_day_diff.merge(
+        cap_df[['merge_key','max_dia','min_dia']],
+        on='merge_key', how='left'
+    )
+
+    # 7) Percentuais por máquina e dia (em %)
+    per_day_diff['time_gain_max'] = (per_day_diff['delta_setup'] / per_day_diff['max_dia']) * 100
+    per_day_diff['time_gain_min'] = (per_day_diff['delta_setup'] / per_day_diff['min_dia']) * 100
+
+    per_day_diff[['time_gain_max','time_gain_min']] = per_day_diff[['time_gain_max','time_gain_min']].replace([np.inf, -np.inf], np.nan)
+
+    # 8) Médias por máquina (mantendo o nome completo da máquina do per_day_diff)
     avg_by_machine = (
         per_day_diff
-        .groupby('machine_name', as_index=False)['delta_setup']
-        .mean()
-        .rename(columns={'delta_setup': 'avg_daily_delta_setup'})
+        .groupby('machine_name', as_index=False)
+        .agg(
+            avg_daily_delta_setup=('delta_setup','mean'),
+            avg_daily_time_gain_max=('time_gain_max','mean'),
+            avg_daily_time_gain_min=('time_gain_min','mean'),
+        )
         .sort_values('machine_name', kind='stable')
     )
 
-    # 7) Média global
+    # 9) Média global (minutos)
     overall_avg = float(per_day_diff['delta_setup'].mean()) if not per_day_diff.empty else 0.0
 
-    return per_day_diff.sort_values(['machine_name', 'dia']).reset_index(drop=True), avg_by_machine, overall_avg
+    # organiza e remove a chave auxiliar
+    per_day_diff = (
+        per_day_diff
+        .drop(columns=['merge_key'])
+        .sort_values(['machine_name','dia'])
+        .reset_index(drop=True)
+    )
+
+    return per_day_diff, avg_by_machine, overall_avg
+
+
 
 
 def main():
@@ -257,6 +343,24 @@ def main():
     
     scheduling_solution_df = scheduling_solution_df.dropna(subset=['inicio']).copy()
     
+    machine_information_path = dir_path / "brut_machine_information.csv"
+    machine_shifts_df = pd.read_csv(machine_information_path, converters={
+            'turnos': parse_turnos_to_list,
+            'processo': normalize_string,
+            'recurso': normalize_string
+    })
+
+    turnos_path = dir_path / "brut_shifts.csv"
+    turnos_df = pd.read_csv(turnos_path, sep=r"\s*,\s*", engine="python")
+
+    time_capacity_path = dir_path / "brut_recurso_time_capacity.csv"
+    time_capacity_df = pd.read_csv(
+        time_capacity_path,
+        converters={
+            'recurso': normalize_string
+        }
+    )
+
     demand_df = pd.read_csv(
     file_path,
     parse_dates=['not_before_date', 'deadline'],
@@ -305,10 +409,14 @@ def main():
         
         if resource not in ['sopradora']:
             continue
+        
+        current_machine_shift = machine_shifts_df[machine_shifts_df['recurso'] == resource]['turnos']
+        current_machine_time_capacity = int(time_capacity_df[time_capacity_df['recurso'] == resource]['max_dia'].iloc[0])
+        
         # Ordenação dos jobs em ordem crescente de deadline e caso haja empate por ordenacao
         real_solution_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
         
-        real_solution_df = calculate_init_end_singleMachine(real_solution_df, work_days)
+        real_solution_df = calculate_init_end_singleMachine(real_solution_df, work_days, current_machine_shift, turnos_df, current_machine_time_capacity)
 
         real_sequence_solution.append(real_solution_df)
 
@@ -319,7 +427,8 @@ def main():
     
     metrics_real_solution_df = pd.DataFrame(calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df))
     metrics_scheduling_solution_df = pd.DataFrame(calculate_metrics(scheduling_solution_df, kp_macho_data, setup_times_df))
-    
+    print(metrics_real_solution_df)
+    print(metrics_scheduling_solution_df)
     
     machines = demand_df['maquina'].unique().tolist()
 
@@ -327,7 +436,8 @@ def main():
     per_day_diff, avg_by_machine, overall_avg = compare_metrics(
         machines,
         metrics_real_solution_df,
-        metrics_scheduling_solution_df
+        metrics_scheduling_solution_df,
+        time_capacity_df
     )
 
     print(per_day_diff.head())
