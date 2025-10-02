@@ -132,7 +132,7 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
     metrics = []
     for machine, current_df in df.groupby("maquina", sort=False):
         process, resource = machine.split("_")
-        if resource not in ['sopradora']:
+        if process in ['pepset']:
             continue
 
         # cria uma coluna de dia baseada no inicio (ajuste se preferir 'fim' ou 'deadline')
@@ -255,7 +255,7 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         cap_df = cap_df.rename(columns={'recurso': 'machine_name'})
 
     # normaliza colunas numéricas e cria merge_key
-    for c in ['max_dia', 'min_dia']:
+    for c in ['max_dia']:
         if c in cap_df.columns:
             cap_df[c] = pd.to_numeric(cap_df[c], errors='coerce')
 
@@ -263,15 +263,14 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
 
     # junta por merge_key (não mexe no nome original)
     per_day_diff = per_day_diff.merge(
-        cap_df[['merge_key','max_dia','min_dia']],
+        cap_df[['merge_key','max_dia']],
         on='merge_key', how='left'
     )
 
     # 7) Percentuais por máquina e dia (em %)
     per_day_diff['time_gain_max'] = (per_day_diff['delta_setup'] / per_day_diff['max_dia']) * 100
-    per_day_diff['time_gain_min'] = (per_day_diff['delta_setup'] / per_day_diff['min_dia']) * 100
 
-    per_day_diff[['time_gain_max','time_gain_min']] = per_day_diff[['time_gain_max','time_gain_min']].replace([np.inf, -np.inf], np.nan)
+    per_day_diff[['time_gain_max']] = per_day_diff[['time_gain_max']].replace([np.inf, -np.inf], np.nan)
 
     # 8) Médias por máquina (mantendo o nome completo da máquina do per_day_diff)
     avg_by_machine = (
@@ -279,8 +278,7 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         .groupby('machine_name', as_index=False)
         .agg(
             avg_daily_delta_setup=('delta_setup','mean'),
-            avg_daily_time_gain_max=('time_gain_max','mean'),
-            avg_daily_time_gain_min=('time_gain_min','mean'),
+            avg_daily_time_gain_max=('time_gain_max','mean')
         )
         .sort_values('machine_name', kind='stable')
     )
@@ -407,7 +405,7 @@ def main():
 
         process, resource = machine.split("_")
         
-        if resource not in ['sopradora']:
+        if process in ['pepset']:
             continue
         
         current_machine_shift = machine_shifts_df[machine_shifts_df['recurso'] == resource]['turnos']
@@ -440,6 +438,7 @@ def main():
         time_capacity_df
     )
 
+    per_day_diff.to_csv(dir_path / "metrics.csv")
     print(per_day_diff.head())
     print(avg_by_machine)
     print("Média global do ganho diário de setup:", overall_avg)
