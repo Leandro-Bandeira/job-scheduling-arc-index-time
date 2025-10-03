@@ -77,7 +77,7 @@ def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list, machine_sh
             if row['Tempo Total (minutos)'] == '-':
                 row['Tempo Total (minutos)'] = 1
 
-            p = int(row['Tempo Total (minutos)'])
+            p = float(row["qtd_moldes"]) * float(row["tempo_ciclo"])
             can_work = False
             delta_min = (t - base_dt).total_seconds() // 60            
 
@@ -431,9 +431,8 @@ def main():
     path_output = dir_path / "sequence_solution.csv"
     real_sequence_solution_df = pd.concat(real_sequence_solution, ignore_index=True)
     real_sequence_solution_df.to_csv(path_output, index=False)
-
-    print(f"Quantia de jobs na solucao real: {real_sequence_solution_df.shape[0]}")
-    print(f"Quantia de jobs na solucao scheduling: {scheduling_solution_df.shape[0]}")
+    #print(real_sequence_solution_df[real_sequence_solution_df['recurso'] == 'sopradora'].shape[0])
+    #print(scheduling_solution_df[scheduling_solution_df['maquina'] == 'coldboxsoprado_sopradora'].shape[0])
     metrics_real_solution_df = pd.DataFrame(calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df))
     metrics_scheduling_solution_df = pd.DataFrame(calculate_metrics(scheduling_solution_df, kp_macho_data, setup_times_df))
 
