@@ -171,21 +171,21 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
                         (setup_times_df['para_config'] == c_info['config']) &
                         (setup_times_df['recurso'] == resource)
                     )
-                    #print(f"from: {p_key} to {c_key}")
-                    #print(p_info.get('not_setup'))
-
+                    
                     if mask_setup.any():
                         # se houver múltiplas linhas, pega a primeira (ou poderia usar .min())
                         setup_min = setup_times_df.loc[mask_setup, 'setup_time_min'].iloc[0]
                         total_setup_time += int(setup_min)
 
             total_uso = (day_df['fim'] - day_df['inicio']).dt.total_seconds().sum() // 60
+            makespan = (day_df['fim'].max() - day_df['inicio'].min()) / pd.Timedelta(minutes=1)
             metrics.append({
                 'machine_name': machine,
                 'dia': dia,                
                 'setup_time': total_setup_time,
                 'atrasados': atrasados,
-                'total_uso': total_uso
+                'total_uso': total_uso,
+                'makespan': makespan
             })
 
     metrics_df = pd.DataFrame(metrics).sort_values(['machine_name', 'dia']).reset_index(drop=True)
@@ -194,9 +194,9 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
 
 def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame, time_capacity_df: pd.DataFrame):
     """
-    Compara métricas de setup e atraso entre 'real' e 'scheduling' por máquina e dia.
-    Adiciona % de ganho de tempo em relação à capacidade máxima (max_dia).
-    Retorno compatível com a assinatura anterior.
+    Compara métricas de setup, atraso e makespan entre 'real' e 'scheduling' por máquina e dia.
+    Adiciona % de ganho de tempo em relação à capacidade máxima (max_dia) usando delta de setup.
+    Retorna: (per_day_diff, avg_by_machine, overall_avg)
     """
 
     # 1) Filtra (se 'machines' foi passado)
@@ -207,26 +207,28 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         subset_real  = metrics_real_df.copy()
         subset_sched = metrics_sched_df.copy()
 
-    # 2) Agrega por máquina e dia (setup_time, total_uso, atrasados)
+    # 2) Agrega por máquina e dia (setup_time, total_uso, atrasados, makespan)
     real_agg = (
         subset_real
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
-        .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum'})
+        .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum', 'makespan': 'max'})
         .rename(columns={
             'setup_time': 'setup_real',
             'total_uso':  'uso_real',
-            'atrasados':  'atrasados_real'
+            'atrasados':  'atrasados_real',
+            'makespan':   'makespan_real'
         })
     )
 
     sched_agg = (
         subset_sched
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
-        .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum'})
+        .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum', 'makespan': 'max'})
         .rename(columns={
             'setup_time': 'setup_sched',
             'total_uso':  'uso_sched',
-            'atrasados':  'atrasados_sched'
+            'atrasados':  'atrasados_sched',
+            'makespan':   'makespan_sched'
         })
     )
 
@@ -234,24 +236,22 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
     per_day_diff = pd.merge(real_agg, sched_agg, on=['machine_name', 'dia'], how='outer')
 
     # 4) Preenche faltantes e tipa
-    for c in ['setup_real','setup_sched','uso_real','uso_sched','atrasados_real','atrasados_sched']:
+    for c in [
+        'setup_real','setup_sched','uso_real','uso_sched',
+        'atrasados_real','atrasados_sched','makespan_real','makespan_sched'
+    ]:
         per_day_diff[c] = pd.to_numeric(per_day_diff[c], errors='coerce').fillna(0)
-        # atrasos são contagens inteiras; usos e setup são minutos (int também ajuda)
-        if 'atrasados' in c:
-            per_day_diff[c] = per_day_diff[c].astype(int)
-        else:
-            per_day_diff[c] = per_day_diff[c].astype(int)
+        # atrasos são contagens inteiras; tempos em minutos podem ser inteiros também
+        per_day_diff[c] = per_day_diff[c].astype(int)
 
-    # 5) Deltas (positivo = melhor)
-    per_day_diff['delta_setup']     = per_day_diff['setup_real']     - per_day_diff['setup_sched']
-    per_day_diff['delta_atrasados'] = per_day_diff['atrasados_real'] - per_day_diff['atrasados_sched']
+    # 5) Deltas (positivo = melhor: redução no valor)
+    per_day_diff['delta_setup']       = per_day_diff['setup_real']     - per_day_diff['setup_sched']
+    per_day_diff['delta_atrasados']   = per_day_diff['atrasados_real'] - per_day_diff['atrasados_sched']
+    per_day_diff['delta_makespan']    = per_day_diff['makespan_real']  - per_day_diff['makespan_sched']
 
     # ---------- MERGE COM CAPACIDADE USANDO O SUFIXO APÓS O ÚLTIMO "_" ----------
     def _norm(s: str) -> str:
-        return (
-            str(s).lower().strip()
-            .replace(' ', '').replace('-', '').replace('/', '')
-        )
+        return str(s).lower().strip().replace(' ', '').replace('-', '').replace('/', '')
 
     per_day_diff['merge_key'] = (
         per_day_diff['machine_name'].astype(str).str.rsplit('_', n=1).str[-1].map(_norm)
@@ -271,18 +271,19 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         on='merge_key', how='left'
     )
 
-    # 7) Percentual de ganho de tempo (vs capacidade máxima do dia)
+    # 7) Percentual de ganho de tempo (vs capacidade máxima do dia) — baseado no delta de setup
     per_day_diff['time_gain_max'] = (per_day_diff['delta_setup'] / per_day_diff['max_dia']) * 100
     per_day_diff['time_gain_max'] = per_day_diff['time_gain_max'].replace([np.inf, -np.inf], np.nan)
 
-    # 8) Médias por máquina (inclui delta de atrasos)
+    # 8) Médias por máquina (inclui delta de atrasos e de makespan)
     avg_by_machine = (
         per_day_diff
         .groupby('machine_name', as_index=False)
         .agg(
             avg_daily_delta_setup=('delta_setup','mean'),
             avg_daily_time_gain_max=('time_gain_max','mean'),
-            avg_daily_delta_atrasados=('delta_atrasados','mean')
+            avg_daily_delta_atrasados=('delta_atrasados','mean'),
+            avg_daily_delta_makespan=('delta_makespan','mean'),
         )
         .sort_values('machine_name', kind='stable')
     )
@@ -345,6 +346,8 @@ def main():
     
     scheduling_solution_df = scheduling_solution_df.dropna(subset=['inicio']).copy()
     
+
+
     machine_information_path = dir_path / "brut_machine_information.csv"
     machine_shifts_df = pd.read_csv(machine_information_path, converters={
             'turnos': parse_turnos_to_list,
@@ -393,16 +396,18 @@ def main():
     count_days = (friday - init_date).days + 1
     work_days = [init_date + timedelta(days=i) for i in range(count_days)]
 
+
     # Verifica os jobs que possuem not before date maior do que a friday, ou seja nao podem ser planejados essa semana
     mask = (demand_df['not_before_date'].dt.date > pd.Timestamp(friday).date())
     demand_df = demand_df.loc[~mask].copy()
-    
+    print(f"Quantia de jobs em demand apos a remoacao por not_before_date {demand_df.shape[0]}")
+
     # Verifica os jobs que possuem deadline < init_date
     mask = (demand_df['deadline'] < pd.Timestamp(init_date))
     demand_df.loc[mask, 'deadline'] = init_date
 
     demand_df['maquina'] = (demand_df['processo'] + '_' + demand_df['recurso'])
-
+    
     real_sequence_solution = []
     # Agrupando por processo e recurso
     for machine, current_df in demand_df.groupby("maquina", sort=False):
@@ -412,6 +417,7 @@ def main():
         if process in ['pepset']:
             continue
         
+
         current_machine_shift = machine_shifts_df[machine_shifts_df['recurso'] == resource]['turnos']
         current_machine_time_capacity = int(time_capacity_df[time_capacity_df['recurso'] == resource]['max_dia'].iloc[0])
         
@@ -426,11 +432,11 @@ def main():
     real_sequence_solution_df = pd.concat(real_sequence_solution, ignore_index=True)
     real_sequence_solution_df.to_csv(path_output, index=False)
 
-    
+    print(f"Quantia de jobs na solucao real: {real_sequence_solution_df.shape[0]}")
+    print(f"Quantia de jobs na solucao scheduling: {scheduling_solution_df.shape[0]}")
     metrics_real_solution_df = pd.DataFrame(calculate_metrics(real_sequence_solution_df, kp_macho_data, setup_times_df))
     metrics_scheduling_solution_df = pd.DataFrame(calculate_metrics(scheduling_solution_df, kp_macho_data, setup_times_df))
-    print(metrics_real_solution_df)
-    print(metrics_scheduling_solution_df)
+
     
     machines = demand_df['maquina'].unique().tolist()
 
