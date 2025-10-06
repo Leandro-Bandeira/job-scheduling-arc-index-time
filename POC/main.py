@@ -1,11 +1,11 @@
 
 import json
 import pyomo.environ as pyo
+from pyomo.environ import ConcreteModel, Param, Var, Binary, NonNegativeReals, Set, Constraint, ConstraintList, Objective, minimize, maximize,value, SolverFactory
 
 
 TIME_STEP = 5
 HORIZON = 7
-
 
 class Arc:
     def __init__(self, src_node, dst_node, arc_type, t):
@@ -34,13 +34,14 @@ class Job:
 class Network:
     def __init__(self, nodes: list, m_setup, job_dummy):
         
-        node_dict = {(n.job.id, n.t): n for n in nodes} # Look up para ver se o node realmente existe
+        self.node_dict = {(n.job.id, n.t): n for n in nodes} # Look up para ver se o node realmente existe
+
         for dn in job_dummy.nodes:
-            node_dict[(dn.job.id, dn.t)] = dn
+            self.node_dict[(dn.job.id, dn.t)] = dn
 
         """
         O conjunto A_1 representa todos os arcos dado por todas as combinacoes dos Nodes possiveis
-        Todo arco, eh representado da forma (i, j, t) tal que ele conecte os nodes (i,t -pi-s_ij)->(j, t)
+        Todo arco eh representado da forma (i, j, t) tal que ele conecte os nodes (i,t -pi-s_ij)->(j, t)
         Sendo assim, o arco esta entrando no node (j, t) e saindo do node (i, t - pi -s_ij)        
         """
         self.arcs_A1 = []
@@ -56,7 +57,7 @@ class Network:
                     continue
 
                 # Verifica se o node realmente existe
-                src = node_dict.get((src.job.id, t_src))
+                src = self.node_dict.get((src.job.id, t_src))
 
                 if src is not None:
                     a = Arc(src, dst, 1, dst.t)
@@ -79,7 +80,7 @@ class Network:
         for src in nodes:  # src = (j, t_src)
             p_j = src.job.p_time
             t_dst = src.t + p_j
-            dst = node_dict.get((0, t_dst))  # dummy no tempo do término
+            dst = self.node_dict.get((0, t_dst))  # dummy no tempo do término
             if dst is not None:
                 a = Arc(src, dst, 3, t_dst)
                 self.arcs_A3.append(a)
@@ -89,36 +90,89 @@ class Network:
 
 
 
-def build_model(network, jobs):
-    model = pyo.ConcreteModel()
+def build_model(network, jobs, count_machines):
+    model = ConcreteModel()
 
     # Conjunto de arcos (índice único)
     all_arcs = network.arcs_A1 + network.arcs_A2 + network.arcs_A3
-    model.A = pyo.Set(initialize=range(len(all_arcs)))
+    all_nodes_keys = list(network.node_dict.keys())
+    
+    
+    # Mapeia arcos por job de destino e saida
+    arcs_in_by_job = {}
+    arcs_out_by_job = {}
+
+    # Mapeia arcos por node de destino e saida (para o Flow Conservation Constraint)
+    arcs_in_by_node_key = {}
+    arcs_out_by_node_key = {}
+
+    for idx, arc in enumerate(all_arcs):
+        j_id_in = arc.dst_node.job.id
+        j_id_out = arc.src_node.job.id
+
+        arcs_in_by_job.setdefault(j_id_in, []).append(idx)
+        arcs_out_by_job.setdefault(j_id_out, []).append(idx)
+
+        node_key_dst = (arc.dst_node.job.id, arc.dst_node.t)
+        node_key_src = (arc.src_node.job.id, arc.src_node.t)
+        arcs_in_by_node_key.setdefault(node_key_dst, []).append(idx)
+        arcs_out_by_node_key.setdefault(node_key_src, []).append(idx)
+
+    # Conjuntos
+    model.jobs = Set(initialize=list(arcs_in_by_job.keys()))
+    model.A = Set(initialize=range(len(all_arcs)))
 
     # Variáveis binárias: x[a] = 1 se arco a é usado
-    model.x = pyo.Var(model.A, within=pyo.Binary)
+    model.x = Var(model.A, within=Binary)
+    model.C_max = Var(within=NonNegativeReals)
+    model.V = Set(dimen=2, initialize=all_nodes_keys)
 
-    # Mapeia arcos por job de destino
-    arcs_in_by_job = {}
-    for idx, arc in enumerate(all_arcs):
-        j_id = arc.dst_node.job.id
-        if j_id == 0:  # ignora dummy
-            continue
-        if arc.type == 4:  # exclui A4
-            continue
-        arcs_in_by_job.setdefault(j_id, []).append(idx)
+    # Constraints
+    model.only_one_in = ConstraintList()
+    model.use_machines = ConstraintList()
+    model.flow_conservation = ConstraintList()
+    model.makespan = ConstraintList()
 
-    # Restrição: cada job recebe exatamente 1 arco de entrada
-    def in_flow_rule(m, j):
-        return sum(m.x[a] for a in arcs_in_by_job[j]) == 1
+    # Each job must be processed exactly once
+    for j in model.jobs:
+        expr = sum(model.x[a] for a in arcs_in_by_job[j])
+        model.only_one_in.add(expr == 1)
     
-    
-    model.jobs = pyo.Set(initialize=list(arcs_in_by_job.keys()))
-    model.in_flow = pyo.Constraint(model.jobs, rule=in_flow_rule)
+    # Cada arco que sai do job dummy indica uma maquina sendo utilizada
+    model.use_machines.add(sum(model.x[a] for a in range(len(all_arcs)) if all_arcs[a].type == 2) == count_machines)
 
+    
+    # ------------------ C3: Flow Conservation (Node Balance) ------------------
+
+    # Nodes that require flow balance (all actual job nodes)
+    nodes_for_flow = []
+    for j, t in model.V:
+        is_actual_job_node = (j != 0)
+        
+        # Balance only applies to actual job nodes. 
+        # Source (0, 0) and sinks (0, t > 0) are excluded.
+        if is_actual_job_node:
+             nodes_for_flow.append((j, t))
+    
+    # The actual job nodes (j > 0) are the internal nodes:
+    # They receive an arc (A1 or A2) and must send one (A1 or A3).
+    for j, t in nodes_for_flow:
+        # Indices of arcs entering node (j, t)
+        in_arcs = arcs_in_by_node_key.get((j, t), [])
+        # Indices of arcs leaving node (j, t)
+        out_arcs = arcs_out_by_node_key.get((j, t), [])
+
+        expr_in = sum(model.x[a] for a in in_arcs)
+        expr_out = sum(model.x[a] for a in out_arcs)
+        
+        # Balance constraint: Flow In = Flow Out
+        model.flow_conservation.add(expr_in - expr_out == 0)
+
+    for j in model.jobs:
+        expr = sum( model.x[a] * a for a in arcs_in_by_job[j])
+        model.makespan.add(model.C_max >= expr)
     # Função objetivo dummy (só para resolver viabilidade)
-    model.obj = pyo.Objective(expr=sum(model.x[a] for a in model.A), sense=pyo.maximize)
+    model.obj = Objective(expr=model.C_max, sense=minimize)
 
     return model
 
@@ -129,6 +183,7 @@ def main():
 
     jobs = [Job(job['id'], job['p_time']) for job in data['jobs']]
     m_setup = data['setup_times']
+
     max_setup = max(max(row) for row in m_setup)
     # Calculatin T = max upper bound for Completion time
     # No pior caso, teremos todos os sendo rodado em uma maquina e entre eles o max setup
@@ -149,12 +204,17 @@ def main():
     # Creating nodes
     
     # Construir modelo Pyomo
-    model = build_model(net, jobs)
+    model = build_model(net, jobs, 1)
 
     # Resolver com HiGHS
-    solver = pyo.SolverFactory("highs")
+    solver = SolverFactory("highs")
     result = solver.solve(model, tee=True)
-   
+      # Check solution status
+    if result.solver.status == pyo.SolverStatus.ok and result.solver.termination_condition == pyo.TerminationCondition.optimal:
+        # **Call the new function to save the Gantt data**
+        save_gantt(model, net, jobs)
+    else:
+        print(f"\nSolver failed to find an optimal solution. Status: {result.solver.status}, Condition: {result.solver.termination_condition}")
 
 
 
