@@ -3,9 +3,11 @@ import json
 import pyomo.environ as pyo
 from pyomo.environ import ConcreteModel, Param, Var, Binary, NonNegativeReals, Set, Constraint, ConstraintList, Objective, minimize, maximize,value, SolverFactory
 
+with open("instances/job_scheduling_input.json", 'r') as file:
+    data = json.load(file)
 
-TIME_STEP = 5
-HORIZON = 7
+TIME_STEP = data['time_step']
+HORIZON = data['n_days']
 
 class Arc:
     def __init__(self, src_node, dst_node, arc_type, t):
@@ -24,6 +26,7 @@ class Node:
 class Job:
     def __init__(self, id, p_time):
         self.id = id
+        self.idx = None
         self.p_time = p_time
         self.nodes = []
 
@@ -50,7 +53,7 @@ class Network:
                 if src.job.id == dst.job.id: continue
 
                 p_i = src.job.p_time
-                s_ij = m_setup[src.job.id - 1][dst.job.id - 1]
+                s_ij = m_setup[src.job.idx][dst.job.idx]
 
                 t_src = dst.t - p_i - s_ij
                 if t_src < 0:
@@ -133,15 +136,17 @@ def build_model(network, jobs, count_machines):
     model.flow_conservation = ConstraintList()
     model.makespan = ConstraintList()
 
+    print("Um inicio por job")
     # Each job must be processed exactly once
     for j in model.jobs:
         expr = sum(model.x[a] for a in arcs_in_by_job[j])
         model.only_one_in.add(expr == 1)
     
+    print("Quantia de maquinas")
     # Cada arco que sai do job dummy indica uma maquina sendo utilizada
-    model.use_machines.add(sum(model.x[a] for a in range(len(all_arcs)) if all_arcs[a].type == 2) == count_machines)
+    model.use_machines.add(sum(model.x[a] for a in range(len(all_arcs)) if all_arcs[a].type == 1) == count_machines)
 
-    
+    print("Flow Conservation")
     # ------------------ C3: Flow Conservation (Node Balance) ------------------
 
     # Nodes that require flow balance (all actual job nodes)
@@ -168,8 +173,9 @@ def build_model(network, jobs, count_machines):
         # Balance constraint: Flow In = Flow Out
         model.flow_conservation.add(expr_in - expr_out == 0)
 
+    print("Makespan")
     for j in model.jobs:
-        expr = sum( model.x[a] * a for a in arcs_in_by_job[j])
+        expr = sum(model.x[a] * all_arcs[a].t for a in arcs_in_by_job[j])
         model.makespan.add(model.C_max >= expr)
     # Função objetivo dummy (só para resolver viabilidade)
     model.obj = Objective(expr=model.C_max, sense=minimize)
@@ -178,44 +184,63 @@ def build_model(network, jobs, count_machines):
 
 
 def main():
-    with open("instances/test.json", 'r') as file:
-        data = json.load(file)
-
-    jobs = [Job(job['id'], job['p_time']) for job in data['jobs']]
-    m_setup = data['setup_times']
-
-    max_setup = max(max(row) for row in m_setup)
-    # Calculatin T = max upper bound for Completion time
-    # No pior caso, teremos todos os sendo rodado em uma maquina e entre eles o max setup
-    T = sum([job.p_time + max_setup for job in jobs])
-    print(f"Upper Bound for completion time {T}")
     
-    # Creating nodes for each job
-    for job in jobs:
-        job.create_nodes(T)
-    
-    job_dummy = Job(0, 0) # Job_dummy id 0 and p_time = 0
-    job_dummy.create_nodes(T)
+    machines = data['machines']
+    jobs = data['jobs']
+    setups = data['setups']
+
+    for machine in machines:
+        if machine['machine_name'] != 'coldboxgasado_coldbox4':
+            continue
+
+        machine_id = machine['machine_id']
+
+        jobs_machine = [Job(job['job_id'], job['processing_slots']) for job in jobs if job['assigned_machine_id'] == machine_id]
+        setups_machine = [setup for setup in setups if setup['machine_id'] == machine_id]
+        
+        """
+        m_setup = data['setup_times']
+
+        max_setup = max(max(row) for row in m_setup)
+        """
+        n = len(jobs_machine)
+        for i, j in enumerate(jobs_machine):
+            j.idx = i
+        # matriz n x n zerada (setup de i -> j)
+        m_setup = [[0 for _ in range(n)] for _ in range(n)]
+        print()
+        max_setup = 0
+        # Calculatin T = max upper bound for Completion time
+        # No pior caso, teremos todos os sendo rodado em uma maquina e entre eles o max setup
+        T = sum([job.p_time + max_setup for job in jobs_machine])
+        print(f"Upper Bound for completion time {T}")
+        
+        # Creating nodes for each job
+        for job in jobs_machine:
+            job.create_nodes(T)
+        
+        job_dummy = Job(0, 0) # Job_dummy id 0 and p_time = 0
+        job_dummy.create_nodes(T)
 
 
-    nodes =  [node for job in jobs for node in job.nodes]
-    
-    net = Network(nodes, m_setup, job_dummy)
-    # Creating nodes
-    
-    # Construir modelo Pyomo
-    model = build_model(net, jobs, 1)
+        nodes =  [node for job in jobs_machine for node in job.nodes]
+        
+        net = Network(nodes, m_setup, job_dummy)
+        # Creating nodes
+        
+        # Construir modelo Pyomo
+        model = build_model(net, jobs_machine, 1)
 
-    # Resolver com HiGHS
-    solver = SolverFactory("highs")
-    result = solver.solve(model, tee=True)
-      # Check solution status
-    if result.solver.status == pyo.SolverStatus.ok and result.solver.termination_condition == pyo.TerminationCondition.optimal:
-        # **Call the new function to save the Gantt data**
-        save_gantt(model, net, jobs)
-    else:
-        print(f"\nSolver failed to find an optimal solution. Status: {result.solver.status}, Condition: {result.solver.termination_condition}")
-
+        # Resolver com HiGHS
+        solver = SolverFactory("gurobi")
+        result = solver.solve(model, tee=True)
+        # Check solution status
+        if result.solver.status == pyo.SolverStatus.ok and result.solver.termination_condition == pyo.TerminationCondition.optimal:
+            # **Call the new function to save the Gantt data**
+            print("Resolvido")
+        else:
+            print(f"\nSolver failed to find an optimal solution. Status: {result.solver.status}, Condition: {result.solver.termination_condition}")
+        
 
 
 
