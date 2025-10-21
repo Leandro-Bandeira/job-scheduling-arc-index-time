@@ -1,4 +1,5 @@
 import gurobipy as gp
+import pandas as pd
 
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
@@ -16,11 +17,12 @@ HORIZON = data['n_days']
 INIT_DATE = data['init_date']
 
 class Arc:
-    def __init__(self, src_node, dst_node, arc_type, t):
+    def __init__(self, src_node, dst_node, arc_type, t, setup_time=0):
         self.src_node = src_node
         self.dst_node = dst_node
         self.t = t
         self.type = arc_type
+        self.setup_time = setup_time
 
 class Node:
     def __init__(self, job, t):
@@ -37,61 +39,8 @@ class Job:
         self.nodes = []
 
     def create_nodes(self, T):
-        self.nodes = [Node(self, t) for t in range(0, T) if t + self.p_time < T]
-
-
-
-def display_solution_and_gantt(solution_jobs,  machine_name):
-    """
-    Exibe a sequência de jobs em uma tabela e cria um gráfico de Gantt.
-    """
-    if not solution_jobs:
-        print("Nenhuma solução para exibir.")
-        return
-
-    # 1. Ordena os jobs pela hora de início
-    solution_jobs.sort(key=lambda j: j['start_slot'])
-    
-    # 2. Converte a data inicial e calcula as horas de início/fim
-    init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
-    
-    print("\n--- Sequenciamento Otimizado ---")
-    print(f"{'Job ID':<10} | {'Início':<20} | {'Fim':<20} | {'Duração (slots)':<15}")
-    print("-" * 70)
-
-    for job in solution_jobs:
-        start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
-        job['start_time'] = init_date + start_delta
-        
-        end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
-        job['end_time'] = init_date + end_delta
-        
-        print(f"{job['id']:<10} | {job['start_time'].strftime('%Y-%m-%d %H:%M'):<20} | {job['end_time'].strftime('%Y-%m-%d %H:%M'):<20} | {job['p_time']:<15}")
-    print("-" * 70)
-
-    # 3. Cria o Gráfico de Gantt
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    job_labels = [job['id'] for job in solution_jobs]
-    start_dates = [mdates.date2num(job['start_time']) for job in solution_jobs]
-    end_dates = [mdates.date2num(job['end_time']) for job in solution_jobs]
-    durations = [end - start for start, end in zip(start_dates, end_dates)]
-
-    ax.barh(job_labels, durations, left=start_dates, height=0.6, align='center', edgecolor='black')
-
-    # Formatação do gráfico
-    ax.set_xlabel('Data e Hora')
-    ax.set_ylabel('Jobs')
-    ax.set_title(f'Gráfico de Gantt - Sequenciamento para {machine_name}')
-    ax.grid(True, which='major', axis='x', linestyle='--', linewidth=0.5)
-
-    # Formatação do eixo X para exibir datas
-    ax.xaxis_date()
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-    fig.autofmt_xdate() # Rotaciona as datas para melhor visualização
-
-    plt.tight_layout()
-    plt.savefig('gantt.png')
+        t_max_start = T - self.p_time
+        self.nodes = [Node(self, t) for t in range(0, t_max_start + 1)]
 
 
 class Network:
@@ -118,7 +67,7 @@ class Network:
                 if t_src >= 0:
                     src_node = self.node_dict.get((job_src.idx, t_src))
                     if src_node is not None:
-                        a = Arc(src_node, dst_node, 1, dst_node.t)
+                        a = Arc(src_node, dst_node, 1, dst_node.t, s_ij)
                         self.arcs_A1.append(a)
                         src_node.out_arcs.append(a)
                         dst_node.in_arcs.append(a)
@@ -134,7 +83,7 @@ class Network:
                  # O setup inicial é zero, então o nó de destino deve estar em t=0
                  dst_node = self.node_dict.get((job_dst.idx, 0))
                  if dst_node:
-                     a = Arc(init_node_dummy, dst_node, 2, dst_node.t)
+                     a = Arc(init_node_dummy, dst_node, 2, dst_node.t, setup_time=0)
                      self.arcs_A2.append(a)
                      dst_node.in_arcs.append(a)
                      init_node_dummy.out_arcs.append(a)
@@ -147,7 +96,7 @@ class Network:
             t_dst = src_node.t + p_j
             dst_node = self.node_dict.get((0, t_dst))
             if dst_node is not None:
-                a = Arc(src_node, dst_node, 3, t_dst)
+                a = Arc(src_node, dst_node, 3, t_dst, setup_time=0)
                 self.arcs_A3.append(a)
                 src_node.out_arcs.append(a)
                 dst_node.in_arcs.append(a)
@@ -158,7 +107,7 @@ class Network:
 
 
 
-def build_model(network, jobs, count_machines):
+def build_model(network, jobs, count_machines, time_capacity_data=None):
     """
     Constrói o modelo de otimização usando a biblioteca Gurobipy.
     """
@@ -195,6 +144,7 @@ def build_model(network, jobs, count_machines):
     # CORREÇÃO: Usar job.idx na lista de jobs
     job_indices = [j.idx for j in jobs]
     
+
     print("Adicionando restrição: Um início por job")
     for j_idx in job_indices:
         # Garante que a chave existe antes de somar
@@ -222,10 +172,122 @@ def build_model(network, jobs, count_machines):
         completion_time_expr = gp.quicksum(x[a] * all_arcs[a].t for a in arcs_in_by_job.get(j_idx, []))
         model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
     
+    # <<< --- NOVA RESTRIÇÃO DE CAPACIDADE POR JANELA --- >>>
+    if time_capacity_data:
+        print("Adicionando restrições: Capacidade por janela de tempo")
+
+        # Função auxiliar para calcular a sobreposição de dois intervalos [start, end)
+        def get_overlap(start1, end1, start2, end2):
+            """Calcula a sobreposição em slots entre [start1, end1) e [start2, end2)"""
+            return max(0, min(end1, end2) - max(start1, start2))
+
+        windows = time_capacity_data.get('slots', [])
+        capacities = time_capacity_data.get('slots_capacity', [])
+
+        # Itera sobre cada janela de tempo (ex: k=0, window=[0, 288])
+        for k, window in enumerate(windows):
+            window_start, window_end = window
+            min_cap, max_cap = capacities[k]
+
+            # Esta é a expressão linear que vai somar o uso total nesta janela
+            # Soma( x[a] * (uso_do_arco_a_nesta_janela) )
+            total_usage_in_window = gp.LinExpr()
+
+            # Precisamos pré-calcular a contribuição de cada arco 'a'
+            for a_idx in arc_indices:
+                arc = all_arcs[a_idx]
+                
+                # Arcos A3 (para o sink) não contam como uso da máquina
+                if arc.type == 3:
+                    continue
+
+                # Arcos A1 (Job->Job) e A2 (Dummy->Job) representam uso.
+                # O tempo 't' do arco é o tempo de INÍCIO do job de destino.
+                
+                # 1. Intervalo do Setup: [t_inicio_setup, t_fim_setup)
+                setup_start = arc.t - arc.setup_time
+                setup_end = arc.t
+                
+                # 2. Intervalo do Processamento: [t_inicio_proc, t_fim_proc)
+                proc_start = arc.t
+                proc_end = arc.t + arc.dst_node.job.p_time # p_time do job de DESTINO
+
+                # 3. Calcula a sobreposição (uso) de cada parte com a janela
+                setup_usage = get_overlap(setup_start, setup_end, window_start, window_end)
+                proc_usage = get_overlap(proc_start, proc_end, window_start, window_end)
+                
+                arc_total_usage_in_window = setup_usage + proc_usage
+
+                # Se este arco contribui com algum uso nesta janela, adicione à expressão
+                if arc_total_usage_in_window > 0:
+                    total_usage_in_window.add(x[a_idx], arc_total_usage_in_window)
+
+            
+            model.addConstr(
+                total_usage_in_window <= max_cap, 
+                name=f"max_cap_window_{k}_{window_start}"
+            )
+
     # --- Definição da Função Objetivo ---
     model.setObjective(C_max, GRB.MINIMIZE)
 
     return model, x, C_max
+
+def display_solution_and_gantt(solution_jobs, machine_name):
+    """
+    Gera um Gantt estático (PNG) com um único item no eixo Y (a máquina)
+    e, no eixo X (tempo), os blocos de processamento dos jobs.
+    Não há prints.
+    """
+    if not solution_jobs:
+        return
+
+    # Ordena por início e computa timestamps absolutos (sem imprimir)
+    solution_jobs.sort(key=lambda j: j['start_slot'])
+    init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
+    for job in solution_jobs:
+        start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
+        end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
+        job['start_time'] = init_date + start_delta
+        job['end_time'] = init_date + end_delta
+
+    # Monta as janelas (start, duração) no eixo X (matplotlib usa número de dias)
+    spans = []
+    for job in solution_jobs:
+        start_num = mdates.date2num(job['start_time'])
+        end_num = mdates.date2num(job['end_time'])
+        spans.append((start_num, end_num - start_num))
+
+    # Figura
+    fig, ax = plt.subplots(figsize=(12, 3))
+
+    # Desenha todos os jobs na mesma "faixa" Y (ex.: y=10 com altura 9)
+    y_base, y_height = 10, 9
+    ax.broken_barh(spans, (y_base, y_height), edgecolor='black')
+
+    # Deixa apenas 1 tick no eixo Y com o nome da máquina
+    ax.set_yticks([y_base + y_height / 2])
+    ax.set_yticklabels([machine_name])
+
+    # Eixo X em datetime
+    ax.xaxis_date()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+
+    # Grid sutil no X
+    ax.grid(True, which='major', axis='x', linestyle='--', linewidth=0.5)
+
+    # Rótulos / título (sem prints)
+    ax.set_xlabel('Tempo')
+    ax.set_ylabel('Máquina')
+    ax.set_title(f'Gráfico de Gantt - {machine_name}')
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    # Salva PNG (sem imprimir nada)
+    out_name = f"gantt_{machine_name}.png"
+    plt.savefig(out_name, dpi=150)
+    plt.close(fig)
 
 def main():
     machines = data['machines']
@@ -233,13 +295,15 @@ def main():
     setups_data = data['setups']
 
     for machine in machines:
-        if machine['machine_name'] != 'coldboxgasado_coldbox4':
+        machine_name = machine['machine_name']
+        if machine_name != 'coldboxgasado_coldbox4':
             continue
-
+        
+        machine_time_capacity  = machine['time_capacity']
         machine_id = machine['machine_id']
         machine_name = machine['machine_name']
         jobs_machine = [Job(j['job_id'], j['processing_slots']) for j in jobs_data if j['assigned_machine_id'] == machine_id]
-        print(f"Quantia de jobs na máquina: {len(jobs_machine)}")
+        print(f"Quantia de jobs na máquina {machine_name}: {len(jobs_machine)}")
 
         n = len(jobs_machine)
         # CORREÇÃO: Mapeia ID do job para um índice de 0 a n-1
@@ -260,8 +324,10 @@ def main():
         
         max_setup = max(max(row) for row in m_setup) if m_setup else 0
         T = sum(j.p_time for j in jobs_machine) + (n - 1) * max_setup if n > 0 else 0
+        T_slots = HORIZON * 24 * 60 / TIME_STEP
+        T = int(T_slots)
         print(f"Upper Bound for completion time {T}")
-
+        #T = 800
         # Define idx (1 a n) e cria nós
         for i, job in enumerate(jobs_machine):
             job.idx = i + 1
@@ -277,8 +343,8 @@ def main():
         all_jobs_for_net = jobs_machine + [job_dummy]
         net = Network(nodes, m_setup, job_dummy, all_jobs_for_net)
         
-        model, x, C_max = build_model(net, jobs_machine, 1)
-
+        model, x, C_max = build_model(net, jobs_machine, 1, machine_time_capacity)
+        model.write("modelo.lp")
         model.optimize()
 
         # ... (O restante do seu código para processar a solução permanece o mesmo) ...
@@ -316,21 +382,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-if __name__ == "__main__":
-    main()
