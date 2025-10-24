@@ -39,8 +39,17 @@ def get_total_minutes(hora_str):
 # 3. Para cada linha do dataframe, caso seu not_before_date seja menor ou igual ao dia no sequenciamento, calcula-se o inicio e o fim
 # 4. Se no fim existirem linhas que não foram calculadas inicio e fim, é porque não é possível produzir o job naquela semana
 
-def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list, machine_shift, turnos_df, current_machine_time_capacity) -> pd.DataFrame:    
-
+def calculate_init_end_singleMachine(
+        df:pd.DataFrame,
+        work_days:list,
+        machine_shift,
+        turnos_df,
+        current_machine_time_capacity,
+        kp_macho_data,
+        setup_times_df,
+        resource
+    ) -> pd.DataFrame:    
+    
     df['not_sequence'] = False # Define que nenhum job foi sequenciado
     
     # Vamos organizar do init_dt ate a sexta feira da mesma semana
@@ -73,10 +82,40 @@ def calculate_init_end_singleMachine(df:pd.DataFrame, work_days:list, machine_sh
 
         t = base_dt + timedelta(minutes=day_work_shifts.pop(0))
         total_use_day = 0
-        for idx, row in current_df.iterrows():
-            if row['Tempo Total (minutos)'] == '-':
-                row['Tempo Total (minutos)'] = 1
+        for pos, (idx, row) in enumerate(current_df.iterrows()):
+            if row['tempo_total'] == '-':
+                row['tempo_total'] = 1
 
+            setup_time = 0
+            if pos > 0:
+                prev_row = current_df.iloc[pos - 1] 
+                
+                p_macho  = int(prev_row['_kf_macho'])
+                
+                
+                c_macho = int(row['_kf_macho'])
+                p_key = (p_macho, resource)
+                c_key = (c_macho, resource)
+                p_info = kp_macho_data.get(p_key)
+                c_info = kp_macho_data.get(c_key)
+                # precisa ter info para ambos
+                if p_info and c_info:
+                    
+                    # se trocar para um macho que NÃO está na lista de "sem setup"
+                    if c_macho not in p_info.get('not_setup', []):
+                        
+                        mask_setup = (
+                        (setup_times_df['de_config'] == p_info['config']) &
+                        (setup_times_df['para_config'] == c_info['config']) &
+                        (setup_times_df['recurso'] == resource)
+                        )
+                    
+                        if mask_setup.any():
+                            # se houver múltiplas linhas, pega a primeira (ou poderia usar .min())
+                            setup_time = setup_times_df.loc[mask_setup, 'setup_time_min'].iloc[0]
+            
+            st = 0 if pd.isna(setup_time) else int(setup_time)
+            t = t + timedelta(minutes=st)
             p = float(row["qtd_moldes"]) * float(row["tempo_ciclo"])
             can_work = False
             delta_min = (t - base_dt).total_seconds() // 60            
@@ -371,18 +410,18 @@ def main():
     parse_dates=['not_before_date', 'deadline'],
     converters={'processo': normalize_string,
                 'recurso': normalize_string,
-                'Tempo Total (minutos)': lambda x: str(x).strip()}
+                'tempo_total': lambda x: str(x).strip()}
     )
     # 2) Higienizar e converter a minutos (não numérico -> NaN)
-    tempo_raw = demand_df['Tempo Total (minutos)'].str.replace('.', '', regex=False)   # remove milhar
+    tempo_raw = demand_df['tempo_total'].str.replace('.', '', regex=False)   # remove milhar
     tempo_raw = tempo_raw.str.replace(',', '.', regex=False)                           # vírgula -> ponto
-    demand_df['Tempo Total (minutos)'] = pd.to_numeric(tempo_raw, errors='coerce')
+    demand_df['tempo_total'] = pd.to_numeric(tempo_raw, errors='coerce')
 
     # 3) Remover linhas inválidas (ex.: '  -   ') ou sem valor
-    mask_invalid = demand_df['Tempo Total (minutos)'].isna()
+    mask_invalid = demand_df['tempo_total'].isna()
     if mask_invalid.any():
         # opcional: logar quantas foram removidas
-        print(f"Removendo {mask_invalid.sum()} linha(s) com 'Tempo Total (minutos)' inválido(s).")
+        print(f"Removendo {mask_invalid.sum()} linha(s) com 'tempo_total' inválido(s).")
     demand_df = demand_df.loc[~mask_invalid].copy()
 
     setup_df = pd.read_csv(dir_path / 'setup.csv', converters={'recurso': normalize_string})
@@ -416,7 +455,8 @@ def main():
         
         if process in ['pepset']:
             continue
-        
+        if process != 'coldboxsoprado':
+            continue
 
         current_machine_shift = machine_shifts_df[machine_shifts_df['recurso'] == resource]['turnos']
         current_machine_time_capacity = int(time_capacity_df[time_capacity_df['recurso'] == resource]['max_dia'].iloc[0])
@@ -424,7 +464,7 @@ def main():
         # Ordenação dos jobs em ordem crescente de deadline e caso haja empate por ordenacao
         real_solution_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
         
-        real_solution_df = calculate_init_end_singleMachine(real_solution_df, work_days, current_machine_shift, turnos_df, current_machine_time_capacity)
+        real_solution_df = calculate_init_end_singleMachine(real_solution_df, work_days, current_machine_shift, turnos_df, current_machine_time_capacity, kp_macho_data, setup_times_df, resource)
 
         real_sequence_solution.append(real_solution_df)
 
