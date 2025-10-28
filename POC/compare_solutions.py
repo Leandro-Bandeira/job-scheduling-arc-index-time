@@ -231,14 +231,24 @@ def calculate_metrics(df:pd.DataFrame, kp_macho_data, setup_times_df):
     return metrics_df
 
 
-def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame, time_capacity_df: pd.DataFrame):
+import pandas as pd
+import numpy as np
+
+def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: pd.DataFrame, time_capacity_df: pd.DataFrame=None):
     """
-    Compara métricas de setup, atraso e makespan entre 'real' e 'scheduling' por máquina e dia.
-    Adiciona % de ganho de tempo em relação à capacidade máxima (max_dia) usando delta de setup.
-    Retorna: (per_day_diff, avg_by_machine, overall_avg)
+    Retorna um DataFrame no formato:
+        Métrica | com otimização | sem otimização | diferença | diferença %
+    Onde:
+      - 'com otimização' vem de metrics_sched_df
+      - 'sem otimização' vem de metrics_real_df
+    A agregação segue a regra anterior: por (machine_name, dia)
+      setup_time: sum
+      total_uso:  sum  (não é usado no quadro final)
+      atrasados:  sum
+      makespan:   max  (por máquina/dia), e depois soma geral
     """
 
-    # 1) Filtra (se 'machines' foi passado)
+    # 1) Filtro (se 'machines' foi passado)
     if machines:
         subset_real  = metrics_real_df[metrics_real_df['machine_name'].isin(machines)].copy()
         subset_sched = metrics_sched_df[metrics_sched_df['machine_name'].isin(machines)].copy()
@@ -246,100 +256,148 @@ def compare_metrics(machines, metrics_real_df: pd.DataFrame, metrics_sched_df: p
         subset_real  = metrics_real_df.copy()
         subset_sched = metrics_sched_df.copy()
 
-    # 2) Agrega por máquina e dia (setup_time, total_uso, atrasados, makespan)
+    # 2) Agrega por máquina e dia
     real_agg = (
         subset_real
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
         .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum', 'makespan': 'max'})
-        .rename(columns={
-            'setup_time': 'setup_real',
-            'total_uso':  'uso_real',
-            'atrasados':  'atrasados_real',
-            'makespan':   'makespan_real'
-        })
+        .rename(columns={'setup_time':'setup_real','atrasados':'atrasados_real','makespan':'makespan_real'})
     )
 
     sched_agg = (
         subset_sched
         .groupby(['machine_name', 'dia'], as_index=False, sort=False)
         .agg({'setup_time': 'sum', 'total_uso': 'sum', 'atrasados': 'sum', 'makespan': 'max'})
-        .rename(columns={
-            'setup_time': 'setup_sched',
-            'total_uso':  'uso_sched',
-            'atrasados':  'atrasados_sched',
-            'makespan':   'makespan_sched'
-        })
+        .rename(columns={'setup_time':'setup_sched','atrasados':'atrasados_sched','makespan':'makespan_sched'})
     )
 
-    # 3) Outer join por máquina+dia
-    per_day_diff = pd.merge(real_agg, sched_agg, on=['machine_name', 'dia'], how='outer')
+    # 3) Totais por cenário
+    setup_real_total      = int(real_agg['setup_real'].sum()) if not real_agg.empty else 0
+    setup_sched_total     = int(sched_agg['setup_sched'].sum()) if not sched_agg.empty else 0
+    atrasados_real_total  = int(real_agg['atrasados_real'].sum()) if not real_agg.empty else 0
+    atrasados_sched_total = int(sched_agg['atrasados_sched'].sum()) if not sched_agg.empty else 0
+    makespan_real_total   = int(real_agg['makespan_real'].sum()) if not real_agg.empty else 0
+    makespan_sched_total  = int(sched_agg['makespan_sched'].sum()) if not sched_agg.empty else 0
 
-    # 4) Preenche faltantes e tipa
-    for c in [
-        'setup_real','setup_sched','uso_real','uso_sched',
-        'atrasados_real','atrasados_sched','makespan_real','makespan_sched'
-    ]:
-        per_day_diff[c] = pd.to_numeric(per_day_diff[c], errors='coerce').fillna(0)
-        # atrasos são contagens inteiras; tempos em minutos podem ser inteiros também
-        per_day_diff[c] = per_day_diff[c].astype(int)
+    # 4) Monta tabela final (com = sched, sem = real)
+    linhas = [
+        ("Makespan",      makespan_sched_total,  makespan_real_total),
+        ("Setup",         setup_sched_total,     setup_real_total),
+        ("Qtd. Atrasos",  atrasados_sched_total, atrasados_real_total),
+    ]
 
-    # 5) Deltas (positivo = melhor: redução no valor)
-    per_day_diff['delta_setup']       = per_day_diff['setup_real']     - per_day_diff['setup_sched']
-    per_day_diff['delta_atrasados']   = per_day_diff['atrasados_real'] - per_day_diff['atrasados_sched']
-    per_day_diff['delta_makespan']    = per_day_diff['makespan_real']  - per_day_diff['makespan_sched']
+    dados = []
+    for metrica, com_opt, sem_opt in linhas:
+        diff = com_opt - sem_opt
+        if sem_opt == 0:
+            diff_pct = "0%"
+        else:
+            diff_pct = f"{(diff / sem_opt * 100):.0f}%"
+        dados.append([metrica, int(com_opt), int(sem_opt), int(diff), diff_pct])
 
-    # ---------- MERGE COM CAPACIDADE USANDO O SUFIXO APÓS O ÚLTIMO "_" ----------
-    def _norm(s: str) -> str:
-        return str(s).lower().strip().replace(' ', '').replace('-', '').replace('/', '')
+    df = pd.DataFrame(
+        dados,
+        columns=["Métrica", "com otimização", "sem otimização", "diferença", "diferença %"]
+    ).set_index("Métrica")
 
-    per_day_diff['merge_key'] = (
-        per_day_diff['machine_name'].astype(str).str.rsplit('_', n=1).str[-1].map(_norm)
+    return df
+
+
+def _fmt_datetime_from_minutes(base_date, total_min: int) -> str:
+    """Soma minutos a uma data base e retorna string 'YYYY-MM-DD HH:MM'."""
+    if pd.isna(total_min) or pd.isna(base_date):
+        return "-"
+    return (pd.to_datetime(base_date) + pd.to_timedelta(int(total_min), unit='m')).strftime("%Y-%m-%d %H:%M")
+
+def compare_metrics_by_machine(
+    machines,
+    metrics_real_df: pd.DataFrame,
+    metrics_sched_df: pd.DataFrame,
+):
+    """
+    Retorna um DataFrame por MÁQUINA no formato:
+        (machine_name, Métrica) | com otimização | sem otimização | diferença | diferença %
+    Onde:
+      - 'com otimização' vem de metrics_sched_df
+      - 'sem otimização' vem de metrics_real_df
+      - o Makespan é exibido como data/hora (dia + makespan em minutos)
+      - a diferença de Makespan é em minutos
+    """
+
+    # 1) Filtro (se 'machines' foi passado)
+    if machines:
+        real  = metrics_real_df[metrics_real_df['machine_name'].isin(machines)].copy()
+        sched = metrics_sched_df[metrics_sched_df['machine_name'].isin(machines)].copy()
+    else:
+        real  = metrics_real_df.copy()
+        sched = metrics_sched_df.copy()
+
+    # 2) Agrega por máquina e dia
+    real_agg = (
+        real.groupby(['machine_name', 'dia'], as_index=False, sort=False)
+            .agg({'setup_time':'sum', 'atrasados':'sum', 'makespan':'max'})
+            .rename(columns={'setup_time':'setup_real','atrasados':'atrasados_real','makespan':'makespan_real'})
+    )
+    sched_agg = (
+        sched.groupby(['machine_name', 'dia'], as_index=False, sort=False)
+             .agg({'setup_time':'sum', 'atrasados':'sum', 'makespan':'max'})
+             .rename(columns={'setup_time':'setup_sched','atrasados':'atrasados_sched','makespan':'makespan_sched'})
     )
 
-    cap_df = time_capacity_df.copy()
-    if 'recurso' in cap_df.columns and 'machine_name' not in cap_df.columns:
-        cap_df = cap_df.rename(columns={'recurso': 'machine_name'})
-
-    if 'max_dia' in cap_df.columns:
-        cap_df['max_dia'] = pd.to_numeric(cap_df['max_dia'], errors='coerce')
-
-    cap_df['merge_key'] = cap_df['machine_name'].map(_norm)
-
-    per_day_diff = per_day_diff.merge(
-        cap_df[['merge_key','max_dia']],
-        on='merge_key', how='left'
+    # 3) Soma por máquina (mantendo max por dia aplicado acima)
+    real_sum  = (
+        real_agg.groupby('machine_name', as_index=False)
+                .agg({'setup_real':'sum', 'atrasados_real':'sum', 'makespan_real':'mean'})  # média de makespan/dia
+    )
+    sched_sum = (
+        sched_agg.groupby('machine_name', as_index=False)
+                 .agg({'setup_sched':'sum', 'atrasados_sched':'sum', 'makespan_sched':'mean'})
     )
 
-    # 7) Percentual de ganho de tempo (vs capacidade máxima do dia) — baseado no delta de setup
-    per_day_diff['time_gain_max'] = (per_day_diff['delta_setup'] / per_day_diff['max_dia']) * 100
-    per_day_diff['time_gain_max'] = per_day_diff['time_gain_max'].replace([np.inf, -np.inf], np.nan)
+    # 4) Junta máquinas dos dois lados
+    by_machine = pd.merge(real_sum, sched_sum, on='machine_name', how='outer').fillna(0)
 
-    # 8) Médias por máquina (inclui delta de atrasos e de makespan)
-    avg_by_machine = (
-        per_day_diff
-        .groupby('machine_name', as_index=False)
-        .agg(
-            avg_daily_delta_setup=('delta_setup','mean'),
-            avg_daily_time_gain_max=('time_gain_max','mean'),
-            avg_daily_delta_atrasados=('delta_atrasados','mean'),
-            avg_daily_delta_makespan=('delta_makespan','mean'),
-        )
-        .sort_values('machine_name', kind='stable')
-    )
+    # 5) Monta a tabela final
+    registros = []
+    for _, row in by_machine.iterrows():
+        m = row['machine_name']
 
-    # 9) Média global (minutos de setup)
-    overall_avg = float(per_day_diff['delta_setup'].mean()) if not per_day_diff.empty else 0.0
+        # converte makespan (min) em datetime somando ao último 'dia' conhecido de cada dataset
+        dia_base_real = real_agg.loc[real_agg['machine_name'] == m, 'dia'].max()
+        dia_base_sched = sched_agg.loc[sched_agg['machine_name'] == m, 'dia'].max()
 
-    # organiza
-    per_day_diff = (
-        per_day_diff
-        .drop(columns=['merge_key'])
-        .sort_values(['machine_name','dia'])
-        .reset_index(drop=True)
-    )
+        makespan_com_min  = int(row.get('makespan_sched', 0))
+        makespan_sem_min  = int(row.get('makespan_real', 0))
+        setup_com_min     = int(row.get('setup_sched', 0))
+        setup_sem_min     = int(row.get('setup_real', 0))
+        atrasos_com       = int(row.get('atrasados_sched', 0))
+        atrasos_sem       = int(row.get('atrasados_real', 0))
 
-    return per_day_diff, avg_by_machine, overall_avg
+        pares = [
+            ("Makespan",     (dia_base_sched, makespan_com_min), (dia_base_real, makespan_sem_min), True),
+            ("Setup (min)",  setup_com_min, setup_sem_min, False),
+            ("Qtd. Atrasos", atrasos_com, atrasos_sem, False),
+        ]
 
+        for metrica, com_val, sem_val, is_time in pares:
+            if is_time:
+                # converte minutos em datetime baseado no dia
+                com_dt = _fmt_datetime_from_minutes(com_val[0], com_val[1])
+                sem_dt = _fmt_datetime_from_minutes(sem_val[0], sem_val[1])
+                dif_min = com_val[1] - sem_val[1]
+                pct = "0%" if sem_val[1] == 0 else f"{(dif_min / sem_val[1] * 100):.0f}%"
+                registros.append([m, metrica, com_dt, sem_dt, dif_min, pct])
+            else:
+                dif = com_val - sem_val
+                pct = "0%" if sem_val == 0 else f"{(dif / sem_val * 100):.0f}%"
+                registros.append([m, metrica, int(com_val), int(sem_val), int(dif), pct])
+
+    df = pd.DataFrame(
+        registros,
+        columns=["machine_name", "Métrica", "com otimização", "sem otimização", "diferença (min)", "diferença %"]
+    ).set_index(["machine_name", "Métrica"])
+
+    return df
 
 
 
@@ -479,19 +537,18 @@ def main():
     
     machines = demand_df['maquina'].unique().tolist()
 
-    
-    per_day_diff, avg_by_machine, overall_avg = compare_metrics(
+    df_compare = compare_metrics_by_machine(machines, metrics_real_solution_df, metrics_scheduling_solution_df)
+    """
+    df_compare = compare_metrics(
         machines,
         metrics_real_solution_df,
         metrics_scheduling_solution_df,
         time_capacity_df
     )
-
-    per_day_diff.to_csv(dir_path / "metrics.csv")
-    print(per_day_diff.head())
-    print(avg_by_machine)
-    print("Média global do ganho diário de setup:", overall_avg)
-
+    """
+    df_compare.to_csv(dir_path / "metrics.csv")
+    print(df_compare.head())
+    
     
 if __name__ == '__main__':
     main()

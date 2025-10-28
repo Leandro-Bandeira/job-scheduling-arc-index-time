@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from gurobipy import GRB
 import json
+import math 
 import pyomo.environ as pyo
 from pyomo.environ import ConcreteModel, Param, Var, Binary, NonNegativeReals, Set, Constraint, ConstraintList, Objective, minimize, maximize,value, SolverFactory
 
@@ -166,63 +167,48 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         
         # Fluxo de entrada deve ser igual ao fluxo de saída
         model.addConstr(gp.quicksum(x[a] for a in in_arcs) == gp.quicksum(x[a] for a in out_arcs), name=f"flow_cons_{j_idx}_{t}")
-
+    
     print("Adicionando restrição: Cálculo do Makespan")
     for j_idx in job_indices:
         completion_time_expr = gp.quicksum(x[a] * all_arcs[a].t for a in arcs_in_by_job.get(j_idx, []))
         model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
     
-    # <<< --- NOVA RESTRIÇÃO DE CAPACIDADE POR JANELA --- >>>
     if time_capacity_data:
-        print("Adicionando restrições: Capacidade por janela de tempo")
-
-        # Função auxiliar para calcular a sobreposição de dois intervalos [start, end)
-        def get_overlap(start1, end1, start2, end2):
-            """Calcula a sobreposição em slots entre [start1, end1) e [start2, end2)"""
-            return max(0, min(end1, end2) - max(start1, start2))
-
         windows = time_capacity_data.get('slots', [])
         capacities = time_capacity_data.get('slots_capacity', [])
 
-        # Itera sobre cada janela de tempo (ex: k=0, window=[0, 288])
         for k, window in enumerate(windows):
             window_start, window_end = window
             min_cap, max_cap = capacities[k]
-
-            # Esta é a expressão linear que vai somar o uso total nesta janela
-            # Soma( x[a] * (uso_do_arco_a_nesta_janela) )
             total_usage_in_window = gp.LinExpr()
 
-            # Precisamos pré-calcular a contribuição de cada arco 'a'
             for a_idx in arc_indices:
                 arc = all_arcs[a_idx]
                 
-                # Arcos A3 (para o sink) não contam como uso da máquina
-                if arc.type == 3:
+                # Ignora arcos que não representam um job real
+                if arc.dst_node.job.idx == 0:
                     continue
 
-                # Arcos A1 (Job->Job) e A2 (Dummy->Job) representam uso.
-                # O tempo 't' do arco é o tempo de INÍCIO do job de destino.
-                
-                # 1. Intervalo do Setup: [t_inicio_setup, t_fim_setup)
-                setup_start = arc.t - arc.setup_time
-                setup_end = arc.t
-                
-                # 2. Intervalo do Processamento: [t_inicio_proc, t_fim_proc)
-                proc_start = arc.t
-                proc_end = arc.t + arc.dst_node.job.p_time # p_time do job de DESTINO
+                # 1. Encontra o intervalo de processamento do job [inicio, fim)
+                job_start_time = arc.t
+                job_p_time = arc.dst_node.job.p_time
+                # O fim é exclusivo, ex: se começa em 10 e dura 2, usa os slots 10 e 11.
+                # O intervalo é [10, 12).
+                job_end_time = job_start_time + job_p_time 
 
-                # 3. Calcula a sobreposição (uso) de cada parte com a janela
-                setup_usage = get_overlap(setup_start, setup_end, window_start, window_end)
-                proc_usage = get_overlap(proc_start, proc_end, window_start, window_end)
+                # 2. Calcula a sobreposição (overlap) com a janela [window_start, window_end)
+                # A fórmula é: max(0, min(fim_A, fim_B) - max(inicio_A, inicio_B))
                 
-                arc_total_usage_in_window = setup_usage + proc_usage
+                overlap_start = max(job_start_time, window_start)
+                overlap_end = min(job_end_time, window_end)
+                
+                # 3. Este é o coeficiente: o tempo real gasto DENTRO da janela
+                proc_in_window = max(0, overlap_end - overlap_start)
 
-                # Se este arco contribui com algum uso nesta janela, adicione à expressão
-                if arc_total_usage_in_window > 0:
-                    total_usage_in_window.add(x[a_idx], arc_total_usage_in_window)
+                # 4. Adiciona à expressão APENAS se houver sobreposição
+                if proc_in_window > 0:
+                    total_usage_in_window.add(x[a_idx], proc_in_window)
 
-            
             model.addConstr(
                 total_usage_in_window <= max_cap, 
                 name=f"max_cap_window_{k}_{window_start}"
@@ -323,9 +309,20 @@ def main():
                     m_setup[from_idx][to_idx] = setup['setup_slots']
         
         max_setup = max(max(row) for row in m_setup) if m_setup else 0
-        T = sum(j.p_time for j in jobs_machine) + (n - 1) * max_setup if n > 0 else 0
-        T_slots = HORIZON * 24 * 60 / TIME_STEP
-        T = int(T_slots)
+        max_use_per_day = machine_time_capacity['slots_capacity'][0][1]
+        """
+        T = 0
+        for j in jobs_machine:
+            T += j.p_time + max_setup
+            if T >= max_use_per_day:
+                T = 24 * 60 / TIME_STEP
+        """
+        time_needed = sum(j.p_time for j in jobs_machine) + (n - 1) * max_setup if n > 0 else 0
+        days_needed = math.ceil(time_needed / max_use_per_day)
+        
+        T  = math.ceil(days_needed * 24 * 60 / TIME_STEP)
+        #T = int(T_slots)
+        #T = int(290)
         print(f"Upper Bound for completion time {T}")
         #T = 800
         # Define idx (1 a n) e cria nós
