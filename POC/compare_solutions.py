@@ -500,8 +500,8 @@ def main():
     print(f"Quantia de jobs em demand apos a remoacao por not_before_date {demand_df.shape[0]}")
 
     # Verifica os jobs que possuem deadline < init_date
-    mask = (demand_df['deadline'] < pd.Timestamp(init_date))
-    demand_df.loc[mask, 'deadline'] = init_date
+    #mask = (demand_df['deadline'] < pd.Timestamp(init_date))
+    #demand_df.loc[mask, 'deadline'] = init_date
 
     demand_df['maquina'] = (demand_df['processo'] + '_' + demand_df['recurso'])
     
@@ -517,8 +517,8 @@ def main():
             continue
 
         current_machine_shift = machine_shifts_df[machine_shifts_df['recurso'] == resource]['turnos']
-        current_machine_time_capacity = int(time_capacity_df[time_capacity_df['recurso'] == resource]['max_dia'].iloc[0])
-        
+        current_machine_time_capacity = int(time_capacity_df[time_capacity_df['recurso'] == resource]['min_dia'].iloc[0])
+        print(current_machine_time_capacity)
         # Ordenação dos jobs em ordem crescente de deadline e caso haja empate por ordenacao
         real_solution_df = current_df.sort_values(by=['deadline', 'ordenacao'], ascending=[True, True])
         

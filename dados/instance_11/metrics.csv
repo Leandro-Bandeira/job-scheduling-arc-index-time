@@ -1,0 +1,10 @@
+machine_name,Métrica,com otimização,sem otimização,diferença (min),diferença %
+coldboxgasado_coldbox4,Makespan,2025-11-13 02:55,-,175,0%
+coldboxgasado_coldbox4,Setup (min),0,0,0,0%
+coldboxgasado_coldbox4,Qtd. Atrasos,0,0,0,0%
+coldboxgasado_coldboxpequena,Makespan,2025-11-13 09:27,-,567,0%
+coldboxgasado_coldboxpequena,Setup (min),0,0,0,0%
+coldboxgasado_coldboxpequena,Qtd. Atrasos,3,0,3,0%
+coldboxsoprado_sopradora,Makespan,2025-11-13 07:15,2025-11-13 09:43,-148,-25%
+coldboxsoprado_sopradora,Setup (min),390,800,-410,-51%
+coldboxsoprado_sopradora,Qtd. Atrasos,5,5,0,0%
