@@ -137,19 +137,22 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         arcs_in_by_node_key.setdefault(node_key_dst, []).append(idx)
         arcs_out_by_node_key.setdefault(node_key_src, []).append(idx)
 
-    # --- Definição das Variáveis ---
-    x = model.addVars(arc_indices, vtype=GRB.BINARY, name="x")
-    C_max = model.addVar(vtype=GRB.CONTINUOUS, name="C_max")
-
-    # --- Definição das Restrições ---
+     # --- Definição das Restrições ---
     # CORREÇÃO: Usar job.idx na lista de jobs
     job_indices = [j.idx for j in jobs]
+
+    # --- Definição das Variáveis ---
+    x = model.addVars(arc_indices, vtype=GRB.BINARY, name="x")
+    e = model.addVars(job_indices, vtype=GRB.BINARY, name="e")
+    C_max = model.addVar(vtype=GRB.CONTINUOUS, name="C_max")
+
+   
     
 
     print("Adicionando restrição: Um início por job")
     for j_idx in job_indices:
         # Garante que a chave existe antes de somar
-        model.addConstr(gp.quicksum(x[a] for a in arcs_in_by_job.get(j_idx, [])) == 1, name=f"only_one_in_{j_idx}")
+        model.addConstr(gp.quicksum(x[a] for a in arcs_in_by_job.get(j_idx, []))  + e[j_idx]== 1, name=f"only_one_in_{j_idx}")
     
     print("Adicionando restrição: Quantidade de máquinas")
     model.addConstr(gp.quicksum(x[a] for a in arc_indices if all_arcs[a].type == 2) == count_machines, name="use_machines")
@@ -170,16 +173,18 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     
     print("Adicionando restrição: Cálculo do Makespan")
     for j_idx in job_indices:
-        completion_time_expr = gp.quicksum(x[a] * all_arcs[a].t for a in arcs_in_by_job.get(j_idx, []))
+        completion_time_expr = gp.quicksum(x[a] * (all_arcs[a].t + all_arcs[a].dst_node.job.p_time) for a in arcs_in_by_job.get(j_idx, []))
         model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
     
+    
+    print("Adicionando restrição: Capacidade de tempo")
     if time_capacity_data:
         windows = time_capacity_data.get('slots', [])
         capacities = time_capacity_data.get('slots_capacity', [])
-
+        
         for k, window in enumerate(windows):
             window_start, window_end = window
-            min_cap, max_cap = capacities[k]
+            max_cap = capacities[k]
             total_usage_in_window = gp.LinExpr()
 
             for a_idx in arc_indices:
@@ -213,11 +218,16 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
                 total_usage_in_window <= max_cap, 
                 name=f"max_cap_window_{k}_{window_start}"
             )
+    e_penalty_weight = 10e6
+    print(f"Adicionando Função Objetivo (Penalidade e = {e_penalty_weight})")
+    
+    # Soma de todas as variáveis 'e' (jobs não alocados)
+    total_penalty = gp.quicksum(e[j] * e_penalty_weight for j in job_indices)
 
     # --- Definição da Função Objetivo ---
-    model.setObjective(C_max, GRB.MINIMIZE)
+    model.setObjective(C_max + total_penalty, GRB.MINIMIZE)
 
-    return model, x, C_max
+    return model, x, e, C_max
 
 def display_solution_and_gantt(solution_jobs, machine_name):
     """
@@ -309,7 +319,8 @@ def main():
                     m_setup[from_idx][to_idx] = setup['setup_slots']
         
         max_setup = max(max(row) for row in m_setup) if m_setup else 0
-        max_use_per_day = machine_time_capacity['slots_capacity'][0][1]
+        max_use_per_day = machine_time_capacity['slots_capacity'][0]
+        print("max_use_per_day ", max_use_per_day)
         """
         T = 0
         for j in jobs_machine:
@@ -340,7 +351,7 @@ def main():
         all_jobs_for_net = jobs_machine + [job_dummy]
         net = Network(nodes, m_setup, job_dummy, all_jobs_for_net)
         
-        model, x, C_max = build_model(net, jobs_machine, 1, machine_time_capacity)
+        model, x, e, C_max = build_model(net, jobs_machine, 1, machine_time_capacity)
         model.write("modelo.lp")
         model.optimize()
 
@@ -349,6 +360,8 @@ def main():
             print("\n-------------------------------------------")
             print("Solução ótima encontrada!")
             print(f"Makespan (C_max): {C_max.X:.2f} slots = {C_max.X * TIME_STEP / 60:.2f} horas")
+            unscheduled_count = sum(1 for job in jobs_machine if e[job.idx].X > 0.5)
+            print(f"Operações não atendidas: {unscheduled_count}")
             print("-------------------------------------------")
 
             # --- Extração da Solução para o Gráfico ---
