@@ -1,0 +1,100 @@
+[
+    {
+        "job_id": 125,
+        "start_slot": 0,
+        "start_datetime": "2025-11-13 00:00:00",
+        "end_datetime": "2025-11-13 00:40:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 124,
+        "start_slot": 8,
+        "start_datetime": "2025-11-13 00:40:00",
+        "end_datetime": "2025-11-13 01:20:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 119,
+        "start_slot": 16,
+        "start_datetime": "2025-11-13 01:20:00",
+        "end_datetime": "2025-11-13 02:00:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 118,
+        "start_slot": 24,
+        "start_datetime": "2025-11-13 02:00:00",
+        "end_datetime": "2025-11-13 02:40:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 130,
+        "start_slot": 288,
+        "start_datetime": "2025-11-14 00:00:00",
+        "end_datetime": "2025-11-14 00:40:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 131,
+        "start_slot": 296,
+        "start_datetime": "2025-11-14 00:40:00",
+        "end_datetime": "2025-11-14 01:20:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 150,
+        "start_slot": 1152,
+        "start_datetime": "2025-11-17 00:00:00",
+        "end_datetime": "2025-11-17 00:40:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 151,
+        "start_slot": 1160,
+        "start_datetime": "2025-11-17 00:40:00",
+        "end_datetime": "2025-11-17 01:20:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 140,
+        "start_slot": 1168,
+        "start_datetime": "2025-11-17 01:20:00",
+        "end_datetime": "2025-11-17 02:00:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 141,
+        "start_slot": 1176,
+        "start_datetime": "2025-11-17 02:00:00",
+        "end_datetime": "2025-11-17 02:40:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 170,
+        "start_slot": 1440,
+        "start_datetime": "2025-11-18 00:00:00",
+        "end_datetime": "2025-11-18 00:40:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 161,
+        "start_slot": 1448,
+        "start_datetime": "2025-11-18 00:40:00",
+        "end_datetime": "2025-11-18 01:20:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 160,
+        "start_slot": 1456,
+        "start_datetime": "2025-11-18 01:20:00",
+        "end_datetime": "2025-11-18 02:00:00",
+        "duration_minutes": 40
+    },
+    {
+        "job_id": 171,
+        "start_slot": 1464,
+        "start_datetime": "2025-11-18 02:00:00",
+        "end_datetime": "2025-11-18 02:40:00",
+        "duration_minutes": 40
+    }
+]

@@ -1,6 +1,7 @@
 import gurobipy as gp
 import pandas as pd
-
+import plotly.express as px
+import os
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -42,87 +43,102 @@ def create_json_output(solution_jobs):
             'duration_minutes': job['p_time'] * TIME_STEP
         })
 
-    output_filename = f"machine_schedule_output.json"
+    output_filename = f"POC/results/machine_schedule_output.json"
     with open(output_filename, 'w') as f:
         json.dump(output_data, f, indent=4)
     
     print(f"\nResultado salvo em {output_filename}")
 
 
-def display_solution_and_gantt_fixed(solution_jobs, machine_name):
+
+
+def create_interactive_gantt(solution_jobs, machine_name):
     """
-    Gera um Gráfico de Gantt Contínuo para o agendamento da máquina.
+    Gera um Gráfico de Gantt Interativo (.html) usando Plotly.
+    Permite zoom, pan e hover com detalhes (Release Date, Duration, etc).
     """
     if not solution_jobs:
+        print("Nenhum job para gerar gráfico.")
         return
 
     init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
-
-    # Prepara os dados do gráfico
-    plot_data = []
+    
+    # 1. Preparar os dados em um DataFrame do Pandas
+    gantt_data = []
+    
     for job in solution_jobs:
-        start_slot = job['start_slot']
-        duration_slots = job['p_time']
+        # Ignora jobs dummy ou inválidos
+        if job['id'] == 0:
+            continue
+
+        start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
+        end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
         
-        start_delta = timedelta(minutes=start_slot * TIME_STEP)
-        end_delta = timedelta(minutes=(start_slot + duration_slots) * TIME_STEP)
+        start_dt = init_date + start_delta
+        end_dt = init_date + end_delta
         
-        job['start_time'] = init_date + start_delta
-        job['end_time'] = init_date + end_delta
+        # Cria um dicionário com TUDO que você quer que apareça no Hover
+        gantt_data.append({
+            "Job ID": str(job['id']),
+            "Start": start_dt,
+            "Finish": end_dt,
+            "Machine": machine_name,
+            "Duration (min)": job['p_time'] * TIME_STEP,
+            "Start Slot": job['start_slot'],
+            # Garante que se não tiver o dado, mostra N/A
+            "Release Date Slot": job.get('release_date_slot', 'N/A') 
+        })
+
+    if not gantt_data:
+        return
+
+    df = pd.DataFrame(gantt_data)
+
+    # 2. Criar o Gráfico com Plotly Express
+    fig = px.timeline(
+        df, 
+        x_start="Start", 
+        x_end="Finish", 
+        y="Machine",
+        color="Job ID", # Cores diferentes para cada Job
+        text="Job ID",  # Texto dentro da barra
+        # Aqui definimos o que aparece na caixinha interativa:
+        hover_data={
+            "Machine": False, # Não repetir o nome da máquina
+            "Start": True,
+            "Finish": True,
+            "Duration (min)": True,
+            "Start Slot": True,
+            "Release Date Slot": True # <--- SEU PEDIDO AQUI
+        },
+        title=f"Agendamento Interativo - {machine_name}"
+    )
+
+    # 3. Ajustes Visuais
+    fig.update_yaxes(autorange="reversed") # Para garantir ordem correta se houver mais maquinas
+    fig.update_traces(textposition='inside', marker_line_color='black', marker_line_width=1)
+    
+    # Ajustar o layout do eixo X para mostrar datas formatadas
+    fig.update_layout(
+        xaxis=dict(
+            title='Linha do Tempo',
+            tickformat='%Y-%m-%d %H:%M',
+            gridcolor='lightgray'
+        ),
+        bargap=0.2, # Altura da barra
+        height=300, # Altura da figura
+        showlegend=False # Remove legenda lateral para limpar a visão
+    )
+
+    # 4. Salvar o arquivo HTML
+    output_dir = "POC/results"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
         
-        # Converte para número de data do matplotlib (desde 0001-01-01)
-        start_num = mdates.date2num(job['start_time'])
-        end_num = mdates.date2num(job['end_time'])
-        
-        # (Start Position, Duration) em unidades de data
-        plot_data.append((start_num, end_num - start_num, job['id']))
-
-    # Cria o gráfico
-    fig, ax = plt.subplots(figsize=(15, 5))
+    output_filename = f"{output_dir}/gantt_interactive_{machine_name}.html"
+    fig.write_html(output_filename)
     
-    # Altura e posição Y para a barra
-    y_base, y_height = 10, 9
-    
-    # Cria as barras quebradas (posição inicial, [y_base, altura])
-    # [ (start_pos, duration), ... ]
-    spans = [(d[0], d[1]) for d in plot_data]
-    ax.broken_barh(spans, (y_base, y_height), edgecolor='black', facecolors='skyblue')
-    
-    # Rótulos para os jobs (opcional)
-    for start_num, duration, job_id in plot_data:
-        # Centraliza o texto no meio da barra
-        ax.text(start_num + duration / 2, y_base + y_height / 2, 
-                f"Job {job_id}", 
-                ha='center', va='center', color='black', fontsize=8)
-
-    # Configuração do eixo Y
-    ax.set_yticks([y_base + y_height / 2])
-    ax.set_yticklabels([machine_name], fontsize=12)
-    ax.set_ylim(0, 30) # Ajusta o limite Y
-    
-    # Configuração do eixo X (Tempo)
-    ax.xaxis_date()
-    # Formato de data e hora para o eixo X
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-    
-    # Tenta definir um Major Locator mais denso para maior detalhe
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=6)) # Marca a cada 6 horas
-    ax.xaxis.set_minor_locator(mdates.HourLocator(interval=1)) # Marcas menores a cada 1 hora
-    
-    ax.grid(True, which='major', axis='x', linestyle='--', linewidth=0.7)
-    ax.grid(True, which='minor', axis='x', linestyle=':', linewidth=0.5)
-
-    ax.set_xlabel('Tempo', fontsize=12)
-    ax.set_ylabel('Máquina', fontsize=12)
-    ax.set_title(f'Gráfico de Gantt Contínuo - Agendamento {machine_name}', fontsize=14)
-
-    fig.autofmt_xdate(rotation=45)
-    plt.tight_layout()
-    out_name = f"gantt_continuous_{machine_name}.png"
-    plt.savefig(out_name, dpi=150)
-    plt.close(fig)
-    print(f"Gráfico de Gantt salvo em {out_name}")
-
+    print(f"Gráfico Interativo salvo em: {output_filename}")
 
 class Arc:
     def __init__(self, src_node, dst_node, arc_type, t, setup_time=0):
@@ -313,9 +329,24 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         model.addConstr(gp.quicksum(x[a] for a in in_arcs) == gp.quicksum(x[a] for a in out_arcs), name=f"flow_cons_{j_idx}_{t}")
     
     print("Adicionando restrição: Cálculo do Makespan")
+    """
     for j_idx in job_indices:
         completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_idx, []))
         model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
+    """
+
+    total_completion_time = gp.LinExpr()
+    
+    for idx, arc in enumerate(all_arcs):
+        # Arcos de Tipo 1 (Job->Job) e Tipo 2 (Dummy->Job) representam o INÍCIO de um job
+        if arc.type in [1, 2]:
+            # O custo deste arco é o tempo que o job de DESTINO termina
+            # Custo = Tempo de Início (dst.t) + Duração (p_j)
+            
+            completion_time_cost = arc.dst_node.t + arc.dst_node.job.p_time
+            
+            # Adiciona à expressão linear: x[a] * (t + p)
+            total_completion_time.add(x[idx], completion_time_cost)
     
     """
     print("Adicionando restrição: Capacidade de tempo")
@@ -367,8 +398,8 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     total_penalty = gp.quicksum(e[j] * e_penalty_weight for j in job_indices)
 
     # --- Definição da Função Objetivo ---
-    model.setObjective(C_max + total_penalty, GRB.MINIMIZE)
-
+   # model.setObjective(C_max + total_penalty, GRB.MINIMIZE)
+    model.setObjective(total_completion_time + total_penalty, GRB.MINIMIZE)
     return model, x, e, C_max
 
 
@@ -449,14 +480,15 @@ def main():
             solution_jobs = []
             for a_idx, arc in enumerate(net.all_arcs):
                 # Arcos de entrada em jobs reais (tipos 1 e 2) definem o tempo de início
-                if arc.dst_node.job.idx != 0 and x[a_idx].X > 0.5:
+                if arc.dst_node.job.idx != 0 and x[a_idx].X > 0.5 and arc.type in [1, 2]:
                     job = arc.dst_node.job
                     # O nó de destino (j, t) representa o início do job j no slot t.
                     start_slot = arc.dst_node.t 
                     solution_jobs.append({
                         'id': job.id,
                         'p_time': job.p_time,
-                        'start_slot': start_slot
+                        'start_slot': start_slot,
+                        'release_date_slot': job.release_date_slot
                     })
             
             # Ordena pelo slot de início
@@ -466,7 +498,7 @@ def main():
             create_json_output(solution_jobs)
 
             # 2. Cria o gráfico de Gantt contínuo
-            display_solution_and_gantt_fixed(solution_jobs, machine_name)
+            create_interactive_gantt(solution_jobs, machine_name)
 
         elif model.Status == GRB.INFEASIBLE:
             print("\nO modelo é inviável.")
