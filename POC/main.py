@@ -279,6 +279,14 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     e = model.addVars(job_indices, vtype=GRB.BINARY, name="e")
     C_max = model.addVar(vtype=GRB.CONTINUOUS, name="C_max")
 
+    # Definindo valores de custo
+    arc_costs = {}
+
+    for arc_idx, arc in enumerate(all_arcs):
+        if arc.type == 3 or arc.type == 4:
+            arc_costs[arc_idx] = 0
+        else:
+            arc_costs[arc_idx] = arc.dst_node.job.p_time + arc.dst_node.t
    
     
 
@@ -306,7 +314,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     
     print("Adicionando restrição: Cálculo do Makespan")
     for j_idx in job_indices:
-        completion_time_expr = gp.quicksum(x[a] * (all_arcs[a].t + all_arcs[a].dst_node.job.p_time) for a in arcs_in_by_job.get(j_idx, []))
+        completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_idx, []))
         model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
     
     """
