@@ -16,6 +16,113 @@ with open("POC/instances/job_scheduling_input.json", 'r') as file:
 TIME_STEP = data['time_step']
 HORIZON = data['n_days']
 INIT_DATE = data['init_date']
+SLOTS_PER_DAY = data['slots_per_day']
+
+
+def create_json_output(solution_jobs):
+    """
+    Cria um arquivo JSON com o agendamento (job_id, start_date, end_date)
+    """
+    init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
+    output_data = []
+
+    for job in solution_jobs:
+        # start_slot é o slot de início (tempo t do nó de destino)
+        start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
+        end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
+        
+        start_time = init_date + start_delta
+        end_time = init_date + end_delta
+        
+        output_data.append({
+            'job_id': job['id'],
+            "start_slot": job['start_slot'],
+            'start_datetime': start_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'end_datetime': end_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'duration_minutes': job['p_time'] * TIME_STEP
+        })
+
+    output_filename = f"machine_schedule_output.json"
+    with open(output_filename, 'w') as f:
+        json.dump(output_data, f, indent=4)
+    
+    print(f"\nResultado salvo em {output_filename}")
+
+
+def display_solution_and_gantt_fixed(solution_jobs, machine_name):
+    """
+    Gera um Gráfico de Gantt Contínuo para o agendamento da máquina.
+    """
+    if not solution_jobs:
+        return
+
+    init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
+
+    # Prepara os dados do gráfico
+    plot_data = []
+    for job in solution_jobs:
+        start_slot = job['start_slot']
+        duration_slots = job['p_time']
+        
+        start_delta = timedelta(minutes=start_slot * TIME_STEP)
+        end_delta = timedelta(minutes=(start_slot + duration_slots) * TIME_STEP)
+        
+        job['start_time'] = init_date + start_delta
+        job['end_time'] = init_date + end_delta
+        
+        # Converte para número de data do matplotlib (desde 0001-01-01)
+        start_num = mdates.date2num(job['start_time'])
+        end_num = mdates.date2num(job['end_time'])
+        
+        # (Start Position, Duration) em unidades de data
+        plot_data.append((start_num, end_num - start_num, job['id']))
+
+    # Cria o gráfico
+    fig, ax = plt.subplots(figsize=(15, 5))
+    
+    # Altura e posição Y para a barra
+    y_base, y_height = 10, 9
+    
+    # Cria as barras quebradas (posição inicial, [y_base, altura])
+    # [ (start_pos, duration), ... ]
+    spans = [(d[0], d[1]) for d in plot_data]
+    ax.broken_barh(spans, (y_base, y_height), edgecolor='black', facecolors='skyblue')
+    
+    # Rótulos para os jobs (opcional)
+    for start_num, duration, job_id in plot_data:
+        # Centraliza o texto no meio da barra
+        ax.text(start_num + duration / 2, y_base + y_height / 2, 
+                f"Job {job_id}", 
+                ha='center', va='center', color='black', fontsize=8)
+
+    # Configuração do eixo Y
+    ax.set_yticks([y_base + y_height / 2])
+    ax.set_yticklabels([machine_name], fontsize=12)
+    ax.set_ylim(0, 30) # Ajusta o limite Y
+    
+    # Configuração do eixo X (Tempo)
+    ax.xaxis_date()
+    # Formato de data e hora para o eixo X
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+    
+    # Tenta definir um Major Locator mais denso para maior detalhe
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=6)) # Marca a cada 6 horas
+    ax.xaxis.set_minor_locator(mdates.HourLocator(interval=1)) # Marcas menores a cada 1 hora
+    
+    ax.grid(True, which='major', axis='x', linestyle='--', linewidth=0.7)
+    ax.grid(True, which='minor', axis='x', linestyle=':', linewidth=0.5)
+
+    ax.set_xlabel('Tempo', fontsize=12)
+    ax.set_ylabel('Máquina', fontsize=12)
+    ax.set_title(f'Gráfico de Gantt Contínuo - Agendamento {machine_name}', fontsize=14)
+
+    fig.autofmt_xdate(rotation=45)
+    plt.tight_layout()
+    out_name = f"gantt_continuous_{machine_name}.png"
+    plt.savefig(out_name, dpi=150)
+    plt.close(fig)
+    print(f"Gráfico de Gantt salvo em {out_name}")
+
 
 class Arc:
     def __init__(self, src_node, dst_node, arc_type, t, setup_time=0):
@@ -54,7 +161,7 @@ class Network:
             self.node_dict[(dn.job.idx, dn.t)] = dn
 
         # --- ARCOS A1: Job -> Job ---
-        # O Arco A1 (i, j, t) do job i -> j chegando em t em j
+        # O Arco A1 (i, j, t) do job i -> j chegando em t em j, j começa no tempo t
         print("Criando arcos A1")
         self.arcs_A1 = []
         for dst_node in nodes:
@@ -80,21 +187,23 @@ class Network:
                         src_node.out_arcs.append(a)
                         dst_node.in_arcs.append(a)
 
-        # --- ARCOS A2: Dummy -> Primeiro Job (com setup zero) ---
-        # Representa os arcos de inicio das maquinas
-        print("Criando arcos A2")
+        # --- ARCOS A2: Dummy -> Job (Apenas em t=0) ---
+        print("Criando arcos A2 (Inicialização)")
         self.arcs_A2 = []
         for job_dst in jobs:
             if job_dst.idx == 0: continue
             
-            for dst_node in job_dst.nodes:
-                # Busca nó dummy no mesmo instante de tempo
-                src_dummy = self.node_dict.get((0, dst_node.t))
-                if src_dummy:
-                    a = Arc(src_dummy, dst_node, 2, dst_node.t, setup_time=0)
-                    self.arcs_A2.append(a)
-                    src_dummy.out_arcs.append(a)
-                    dst_node.in_arcs.append(a)
+            # Pega APENAS o nó do job no tempo 0
+            dst_node = self.node_dict.get((job_dst.idx, 0))
+            
+            # Pega o nó dummy no tempo 0
+            src_dummy = self.node_dict.get((0, 0))
+            
+            if dst_node and src_dummy:
+                a = Arc(src_dummy, dst_node, 2, dst_node.t, setup_time=0)
+                self.arcs_A2.append(a)
+                src_dummy.out_arcs.append(a)
+                dst_node.in_arcs.append(a)
         
         # --- ARCOS A3: Último Job -> Dummy ---
         print("Criando arcos A3")
@@ -109,17 +218,26 @@ class Network:
                 src_node.out_arcs.append(a)
                 dst_node.in_arcs.append(a)
 
-        # --- ARCOS A4: Ociosidade (dummy -> dummy) ---
-        print("Criando arcos A4")
+        # --- ARCOS A4: Ociosidade
+        # Conecta Node(j, t) -> Node(j, t+1)
+        print("Criando arcos A4 (Espera no Job)")
         self.arcs_A4 = []
-        dummy_nodes_sorted = sorted(job_dummy.nodes, key=lambda n: n.t)
-        for i in range(len(dummy_nodes_sorted) - 1):
-            src_node = dummy_nodes_sorted[i]
-            dst_node = dummy_nodes_sorted[i + 1]
-            a = Arc(src_node, dst_node, 4, dst_node.t, setup_time=0)
-            self.arcs_A4.append(a)
-            src_node.out_arcs.append(a)
-            dst_node.in_arcs.append(a)
+        for job in jobs:
+            # Ignora o Dummy na espera (Dummy só serve de fonte/sumidouro agora)
+            if job.idx == 0: continue 
+            
+            # Ordena nós pelo tempo
+            job_nodes = sorted(job.nodes, key=lambda n: n.t)
+            for i in range(len(job_nodes) - 1):
+                src_node = job_nodes[i]
+                dst_node = job_nodes[i+1]
+                
+                # Arco de espera: custo 0 (ou 1 se quiser penalizar espera), setup 0
+                # Ele apenas avança o tempo sem processar
+                a = Arc(src_node, dst_node, 4, dst_node.t, setup_time=0)
+                self.arcs_A4.append(a)
+                src_node.out_arcs.append(a)
+                dst_node.in_arcs.append(a)
 
         print(f"Tamanho de A_1: {len(self.arcs_A1)}")
         print(f"Tamanho de A_2: {len(self.arcs_A2)}")
@@ -129,28 +247,25 @@ class Network:
 
 
 def build_model(network, jobs, count_machines, time_capacity_data=None):
-    """
-    Constrói o modelo de otimização usando a biblioteca Gurobipy.
-    """
-    model = gp.Model("job_scheduling")
+
+    model = gp.Model("machine_scheduling")
 
     # --- Preparação dos Dados ---
     all_arcs = network.arcs_A1 + network.arcs_A2 + network.arcs_A3 + network.arcs_A4
     network.all_arcs = all_arcs
     arc_indices = range(len(all_arcs))
     
-    # Mapeia arcos por job (usando o índice matemático job.idx)
+    # Mapeia arcos por job
     arcs_in_by_job = {}
     for idx, arc in enumerate(all_arcs):
         j_idx_in = arc.dst_node.job.idx
         if j_idx_in != 0: # Ignora arcos que chegam no job dummy
             arcs_in_by_job.setdefault(j_idx_in, []).append(idx)
 
-    # Mapeia arcos por nó (usando o índice matemático job.idx)
+    # Mapeia arcos por nó
     arcs_in_by_node_key = {}
     arcs_out_by_node_key = {}
     for idx, arc in enumerate(all_arcs):
-        # Usar job.idx em vez de job.id
         node_key_dst = (arc.dst_node.job.idx, arc.dst_node.t)
         node_key_src = (arc.src_node.job.idx, arc.src_node.t)
         arcs_in_by_node_key.setdefault(node_key_dst, []).append(idx)
@@ -169,7 +284,8 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
 
     print("Adicionando restrição: Um início por job")
     for j_idx in job_indices:
-        model.addConstr(gp.quicksum(x[a] for a in arcs_in_by_job.get(j_idx, []))  + e[j_idx]== 1, name=f"only_one_in_{j_idx}")
+        incoming_real_arcs = [a for a in arcs_in_by_job.get(j_idx, []) if all_arcs[a].type != 4]
+        model.addConstr(gp.quicksum(x[a] for a in incoming_real_arcs) + e[j_idx] == 1, name=f"only_one_in_{j_idx}")
     
     print("Adicionando restrição: Quantidade de máquinas")
     model.addConstr(gp.quicksum(x[a] for a in arc_indices if all_arcs[a].type == 2) == count_machines, name="use_machines")
@@ -193,7 +309,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         completion_time_expr = gp.quicksum(x[a] * (all_arcs[a].t + all_arcs[a].dst_node.job.p_time) for a in arcs_in_by_job.get(j_idx, []))
         model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
     
-    
+    """
     print("Adicionando restrição: Capacidade de tempo")
     if time_capacity_data:
         windows = time_capacity_data.get('slots', [])
@@ -235,6 +351,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
                 total_usage_in_window <= max_cap, 
                 name=f"max_cap_window_{k}_{window_start}"
             )
+    """
     e_penalty_weight = 10e9
     print(f"Adicionando Função Objetivo (Penalidade e = {e_penalty_weight})")
     
@@ -246,59 +363,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
 
     return model, x, e, C_max
 
-def display_solution_and_gantt(solution_jobs, machine_name):
-    """
-    Gera Gantts diários, salvando um PNG por dia.
-    """
-    if not solution_jobs:
-        return
 
-    solution_jobs.sort(key=lambda j: j['start_slot'])
-    init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
-    print(f"Data de inicio: {init_date}")
-    for job in solution_jobs:
-        start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
-        end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
-        job['start_time'] = init_date + start_delta
-        job['end_time'] = init_date + end_delta
-
-    # Agrupa por dia, garantindo que jobs que cruzam meia-noite sejam quebrados
-    day_buckets = {}
-    for job in solution_jobs:
-        cur_start = job['start_time']
-        end_time = job['end_time']
-        while cur_start < end_time:
-            day_start = datetime.combine(cur_start.date(), datetime.min.time())
-            day_end = day_start + timedelta(days=1)
-            seg_start = max(cur_start, day_start)
-            seg_end = min(end_time, day_end)
-            if seg_start < seg_end:
-                day_key = day_start.date()
-                start_num = mdates.date2num(seg_start)
-                end_num = mdates.date2num(seg_end)
-                day_buckets.setdefault(day_key, []).append((start_num, end_num - start_num))
-            cur_start = day_end
-
-    for day_key in sorted(day_buckets.keys()):
-        spans = day_buckets[day_key]
-        fig, ax = plt.subplots(figsize=(12, 3))
-        y_base, y_height = 10, 9
-        ax.broken_barh(spans, (y_base, y_height), edgecolor='black')
-        ax.set_yticks([y_base + y_height / 2])
-        ax.set_yticklabels([machine_name])
-
-        ax.xaxis_date()
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-        ax.grid(True, which='major', axis='x', linestyle='--', linewidth=0.5)
-        ax.set_xlabel('Tempo')
-        ax.set_ylabel('Máquina')
-        ax.set_title(f'Gráfico de Gantt - {machine_name} ({day_key.isoformat()})')
-
-        fig.autofmt_xdate()
-        plt.tight_layout()
-        out_name = f"gantt_{machine_name}_{day_key.strftime('%Y%m%d')}.png"
-        plt.savefig(out_name, dpi=150)
-        plt.close(fig)
 
 def main():
     machines = data['machines']
@@ -341,7 +406,7 @@ def main():
         # Horizonte T: Adicionamos uma margem de segurança para evitar infactibilidade com release dates tardios
         max_release = max([j.release_date_slot for j in jobs_machine]) if jobs_machine else 0
         print("max_release ", max_release)
-        T = math.ceil(days_needed * 24 * 60 / TIME_STEP) + max_release + 100
+        T = math.ceil(days_needed * 24 * 60 / TIME_STEP) + max_release + SLOTS_PER_DAY
 
         print(f"Upper Bound for completion time {T}")
         # Define idx (1 a n) e cria nós
@@ -373,22 +438,27 @@ def main():
             print(f"Operações não atendidas: {unscheduled_count}")
             print("-------------------------------------------")
 
-            # --- Extração da Solução para o Gráfico ---
             solution_jobs = []
-            for a in x:
-                if x[a].X > 0.5:
-                    arc = net.all_arcs[a]
-                    # Arcos de entrada em jobs reais (tipos 1 e 2) definem o tempo de início
-                    if arc.dst_node.job.idx != 0:
-                        job = arc.dst_node.job
-                        start_slot = arc.t - job.p_time
-                        solution_jobs.append({
-                            'id': job.id,
-                            'p_time': job.p_time,
-                            'start_slot': start_slot
-                        })
+            for a_idx, arc in enumerate(net.all_arcs):
+                # Arcos de entrada em jobs reais (tipos 1 e 2) definem o tempo de início
+                if arc.dst_node.job.idx != 0 and x[a_idx].X > 0.5:
+                    job = arc.dst_node.job
+                    # O nó de destino (j, t) representa o início do job j no slot t.
+                    start_slot = arc.dst_node.t 
+                    solution_jobs.append({
+                        'id': job.id,
+                        'p_time': job.p_time,
+                        'start_slot': start_slot
+                    })
             
-            display_solution_and_gantt(solution_jobs, machine_name)
+            # Ordena pelo slot de início
+            solution_jobs.sort(key=lambda j: j['start_slot'])
+
+            # 1. Cria a saída JSON com datetimes
+            create_json_output(solution_jobs)
+
+            # 2. Cria o gráfico de Gantt contínuo
+            display_solution_and_gantt_fixed(solution_jobs, machine_name)
 
         elif model.Status == GRB.INFEASIBLE:
             print("\nO modelo é inviável.")
