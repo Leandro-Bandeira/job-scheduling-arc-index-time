@@ -22,62 +22,78 @@ SLOTS_PER_DAY = data['slots_per_day']
 
 def create_json_output(solution_jobs):
     """
-    Cria um arquivo JSON com o agendamento (job_id, start_date, end_date)
+    Cria um arquivo JSON com o agendamento detalhando os atrasos (Tardiness).
     """
     init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
     output_data = []
 
     for job in solution_jobs:
-        # start_slot é o slot de início (tempo t do nó de destino)
+        # Cálculos de tempo
         start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
         end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
         
+        # Cálculo de datas para Due Date
+        # Se due_date_slot for muito grande (infinito), tratamos visualmente
+        if job['due_date_slot'] >= SLOTS_PER_DAY * 10: 
+            due_date_str = "Sem Prazo"
+        else:
+            due_delta = timedelta(minutes=job['due_date_slot'] * TIME_STEP)
+            due_date_str = (init_date + due_delta).strftime('%Y-%m-%d %H:%M:%S')
+
         start_time = init_date + start_delta
         end_time = init_date + end_delta
         
         output_data.append({
             'job_id': job['id'],
             "start_slot": job['start_slot'],
+            "end_slot": job['start_slot'] + job['p_time'],
+            "due_date_slot": job['due_date_slot'],
+            "tardiness_slots": job['tardiness'],
             'start_datetime': start_time.strftime('%Y-%m-%d %H:%M:%S'),
             'end_datetime': end_time.strftime('%Y-%m-%d %H:%M:%S'),
-            'duration_minutes': job['p_time'] * TIME_STEP
+            'due_datetime': due_date_str,
+            'duration_minutes': job['p_time'] * TIME_STEP,
+            'tardiness_minutes': job['tardiness'] * TIME_STEP
         })
 
     output_filename = f"POC/results/machine_schedule_output.json"
+    # Garante que o diretório existe
+    if not os.path.exists("POC/results"):
+        os.makedirs("POC/results")
+
     with open(output_filename, 'w') as f:
         json.dump(output_data, f, indent=4)
     
-    print(f"\nResultado salvo em {output_filename}")
-
-
+    print(f"\nResultado detalhado salvo em {output_filename}")
 
 
 def create_interactive_gantt(solution_jobs, machine_name):
     """
-    Gera um Gráfico de Gantt Interativo (.html) usando Plotly.
-    Permite zoom, pan e hover com detalhes (Release Date, Duration, etc).
+    Gera um Gráfico de Gantt Interativo (.html) com informações de TARDINESS.
     """
     if not solution_jobs:
         print("Nenhum job para gerar gráfico.")
         return
 
     init_date = datetime.strptime(INIT_DATE, '%Y-%m-%d %H:%M')
-    
-    # 1. Preparar os dados em um DataFrame do Pandas
     gantt_data = []
     
     for job in solution_jobs:
-        # Ignora jobs dummy ou inválidos
-        if job['id'] == 0:
-            continue
+        if job['id'] == 0: continue
 
         start_delta = timedelta(minutes=job['start_slot'] * TIME_STEP)
         end_delta = timedelta(minutes=(job['start_slot'] + job['p_time']) * TIME_STEP)
         
         start_dt = init_date + start_delta
         end_dt = init_date + end_delta
-        
-        # Cria um dicionário com TUDO que você quer que apareça no Hover
+
+        # Formatação do Due Date para o hover
+        if job['due_date_slot'] >= 99999:
+            dd_text = "N/A"
+        else:
+            dd_text = str(job['due_date_slot'])
+
+        # Criação dos dados do hover
         gantt_data.append({
             "Job ID": str(job['id']),
             "Start": start_dt,
@@ -85,8 +101,10 @@ def create_interactive_gantt(solution_jobs, machine_name):
             "Machine": machine_name,
             "Duration (min)": job['p_time'] * TIME_STEP,
             "Start Slot": job['start_slot'],
-            # Garante que se não tiver o dado, mostra N/A
-            "Release Date Slot": job.get('release_date_slot', 'N/A') 
+            "Release Date": job.get('release_date_slot', 'N/A'),
+            "Due Date Slot": dd_text,
+            "Tardiness (min)": job['tardiness'] * TIME_STEP, # Atraso em minutos
+            "Status": "ATRASADO" if job['tardiness'] > 0 else "No Prazo"
         })
 
     if not gantt_data:
@@ -94,51 +112,42 @@ def create_interactive_gantt(solution_jobs, machine_name):
 
     df = pd.DataFrame(gantt_data)
 
-    # 2. Criar o Gráfico com Plotly Express
+    # Define cores baseadas no status (Atrasado = Vermelho, No Prazo = Azul/Verde)
+    color_map = {"ATRASADO": "#EF553B", "No Prazo": "#636EFA"}
+
     fig = px.timeline(
         df, 
         x_start="Start", 
         x_end="Finish", 
         y="Machine",
-        color="Job ID", # Cores diferentes para cada Job
-        text="Job ID",  # Texto dentro da barra
-        # Aqui definimos o que aparece na caixinha interativa:
+        color="Status", # Agora a cor indica se atrasou ou não
+        color_discrete_map=color_map,
+        text="Job ID",
         hover_data={
-            "Machine": False, # Não repetir o nome da máquina
-            "Start": True,
-            "Finish": True,
+            "Machine": False, "Status": False,
+            "Start": True, "Finish": True,
             "Duration (min)": True,
-            "Start Slot": True,
-            "Release Date Slot": True # <--- SEU PEDIDO AQUI
+            "Tardiness (min)": True, # Mostra o atraso
+            "Due Date Slot": True,
+            "Release Date": True,
         },
-        title=f"Agendamento Interativo - {machine_name}"
+        title=f"Agendamento - {machine_name} (Foco em Tardiness)"
     )
 
-    # 3. Ajustes Visuais
-    fig.update_yaxes(autorange="reversed") # Para garantir ordem correta se houver mais maquinas
+    fig.update_yaxes(autorange="reversed")
     fig.update_traces(textposition='inside', marker_line_color='black', marker_line_width=1)
-    
-    # Ajustar o layout do eixo X para mostrar datas formatadas
     fig.update_layout(
-        xaxis=dict(
-            title='Linha do Tempo',
-            tickformat='%Y-%m-%d %H:%M',
-            gridcolor='lightgray'
-        ),
-        bargap=0.2, # Altura da barra
-        height=300, # Altura da figura
-        showlegend=False # Remove legenda lateral para limpar a visão
+        xaxis=dict(title='Linha do Tempo', tickformat='%Y-%m-%d %H:%M', gridcolor='lightgray'),
+        bargap=0.2, height=350, showlegend=True
     )
 
-    # 4. Salvar o arquivo HTML
     output_dir = "POC/results"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    output_filename = f"{output_dir}/gantt_interactive_{machine_name}.html"
+    output_filename = f"{output_dir}/gantt_tardiness_{machine_name}.html"
     fig.write_html(output_filename)
-    
-    print(f"Gráfico Interativo salvo em: {output_filename}")
+    print(f"Gráfico Interativo de Tardiness salvo em: {output_filename}")
 
 class Arc:
     def __init__(self, src_node, dst_node, arc_type, t, setup_time=0):
@@ -156,11 +165,12 @@ class Node:
         self.out_arcs = [] # Arcos que saem deste nó
 
 class Job:
-    def __init__(self, id, p_time, release_date_slot=0):
+    def __init__(self, id, p_time, release_date_slot=0, due_date_slot=SLOTS_PER_DAY):
         self.id = id # Id from summary idetification
         self.idx = None # Id for matematical problems
         self.p_time = p_time
         self.release_date_slot = release_date_slot
+        self.due_date_slot = due_date_slot
         self.nodes = []
 
     def create_nodes(self, T):
@@ -293,7 +303,9 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     # --- Definição das Variáveis ---
     x = model.addVars(arc_indices, vtype=GRB.BINARY, name="x")
     e = model.addVars(job_indices, vtype=GRB.BINARY, name="e")
-    C_max = model.addVar(vtype=GRB.CONTINUOUS, name="C_max")
+    #C_max = model.addVar(vtype=GRB.CONTINUOUS, name="C_max")
+    # Definição do tardiness dado por max(0, C_j - d_j)
+    T = model.addVars(job_indices, vtype=GRB.CONTINUOUS, name="T")
 
     # Definindo valores de custo
     arc_costs = {}
@@ -328,26 +340,17 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         # Fluxo de entrada deve ser igual ao fluxo de saída
         model.addConstr(gp.quicksum(x[a] for a in in_arcs) == gp.quicksum(x[a] for a in out_arcs), name=f"flow_cons_{j_idx}_{t}")
     
-    print("Adicionando restrição: Cálculo do Makespan")
-    """
-    for j_idx in job_indices:
-        completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_idx, []))
-        model.addConstr(C_max >= completion_time_expr, name=f"makespan_{j_idx}")
-    """
+    # Definição do tardiness
 
-    total_completion_time = gp.LinExpr()
-    
-    for idx, arc in enumerate(all_arcs):
-        # Arcos de Tipo 1 (Job->Job) e Tipo 2 (Dummy->Job) representam o INÍCIO de um job
-        if arc.type in [1, 2]:
-            # O custo deste arco é o tempo que o job de DESTINO termina
-            # Custo = Tempo de Início (dst.t) + Duração (p_j)
-            
-            completion_time_cost = arc.dst_node.t + arc.dst_node.job.p_time
-            
-            # Adiciona à expressão linear: x[a] * (t + p)
-            total_completion_time.add(x[idx], completion_time_cost)
-    
+    for j_indx in job_indices:
+        completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_indx, []))
+        job_due_date = next(j.due_date_slot for j in jobs if j.idx == j_indx)
+
+        model.addConstr(T[j_indx] >= completion_time_expr - job_due_date, name=f"tardiness_def_{j_indx}")
+        model.addConstr(T[j_indx] >= 0, name=f"tardiness_nonneg_{j_indx}")
+
+
+
     """
     print("Adicionando restrição: Capacidade de tempo")
     if time_capacity_data:
@@ -396,11 +399,12 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     
     # Soma de todas as variáveis 'e' (jobs não alocados)
     total_penalty = gp.quicksum(e[j] * e_penalty_weight for j in job_indices)
-
+    total_tardiness = gp.quicksum(T[j] for j in job_indices)
+    
     # --- Definição da Função Objetivo ---
-   # model.setObjective(C_max + total_penalty, GRB.MINIMIZE)
-    model.setObjective(total_completion_time + total_penalty, GRB.MINIMIZE)
-    return model, x, e, C_max
+    model.setObjective(total_tardiness + total_penalty, GRB.MINIMIZE)
+    #model.setObjective(total_completion_time + total_penalty, GRB.MINIMIZE)
+    return model, x, e, total_tardiness
 
 
 
@@ -417,7 +421,7 @@ def main():
         machine_time_capacity  = machine['time_capacity']
         machine_id = machine['machine_id']
         machine_name = machine['machine_name']
-        jobs_machine = [Job(j['job_id'], j['processing_slots'], j.get('release_date_slot', 0)) for j in jobs_data if j['assigned_machine_id'] == machine_id]
+        jobs_machine = [Job(j['job_id'], j['processing_slots'], j.get('release_date_slot', 0), j.get('deadline_date_slot', SLOTS_PER_DAY)) for j in jobs_data if j['assigned_machine_id'] == machine_id]
         print(f"Quantia de jobs na máquina {machine_name}: {len(jobs_machine)}")
 
         n = len(jobs_machine)
@@ -468,27 +472,40 @@ def main():
         model.write("modelo.lp")
         model.optimize()
 
-        # ... (O restante do seu código para processar a solução permanece o mesmo) ...
         if model.Status == GRB.OPTIMAL:
             print("\n-------------------------------------------")
             print("Solução ótima encontrada!")
-            print(f"Makespan (C_max): {C_max.X:.2f} slots = {C_max.X * TIME_STEP / 60:.2f} horas")
+            
+            # Cálculo dos resultados reais para exibição
+            # total_tardiness_val = sum(T_vars[j.idx].X for j in jobs_machine)
+            obj_val = model.ObjVal
             unscheduled_count = sum(1 for job in jobs_machine if e[job.idx].X > 0.5)
+            
+            # Se houver penalidade, subtrai do obj para mostrar só o atraso real
+            real_tardiness = obj_val - (unscheduled_count * 10e9)
+            
+            print(f"Total Tardiness (Soma): {real_tardiness:.2f} slots")
             print(f"Operações não atendidas: {unscheduled_count}")
             print("-------------------------------------------")
 
             solution_jobs = []
             for a_idx, arc in enumerate(net.all_arcs):
-                # Arcos de entrada em jobs reais (tipos 1 e 2) definem o tempo de início
-                if arc.dst_node.job.idx != 0 and x[a_idx].X > 0.5 and arc.type in [1, 2]:
+                # Extrai apenas jobs produtivos
+                if x[a_idx].X > 0.5 and arc.dst_node.job.idx != 0 and arc.type in [1, 2]:
                     job = arc.dst_node.job
-                    # O nó de destino (j, t) representa o início do job j no slot t.
-                    start_slot = arc.dst_node.t 
+                    start_slot = arc.dst_node.t
+                    end_slot = start_slot + job.p_time
+                    
+                    # Calcula o atraso individual para o relatório
+                    tardiness_val = max(0, end_slot - job.due_date_slot)
+
                     solution_jobs.append({
                         'id': job.id,
                         'p_time': job.p_time,
                         'start_slot': start_slot,
-                        'release_date_slot': job.release_date_slot
+                        'release_date_slot': job.release_date_slot,
+                        'due_date_slot': job.due_date_slot,
+                        'tardiness': tardiness_val
                     })
             
             # Ordena pelo slot de início
