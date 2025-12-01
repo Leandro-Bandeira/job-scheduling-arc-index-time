@@ -326,7 +326,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     # Penalidade = (Pior Caso de Custos) + Margem
     # Pior Caso = Todos os jobs terminam no tempo T_max
     #e_penalty_weight = (T_max * sum_weights) + 1 
-    e_penalty_weight = 10e9
+    e_penalty_weight = T_max + 1
     print(f"Adicionando Função Objetivo (Penalidade e = {e_penalty_weight})")
     # --- Definição das Restrições ---
     job_indices = [j.idx for j in jobs]
