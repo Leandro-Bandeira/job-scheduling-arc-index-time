@@ -325,8 +325,8 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
 
     # Penalidade = (Pior Caso de Custos) + Margem
     # Pior Caso = Todos os jobs terminam no tempo T_max
-    e_penalty_weight = (T_max * sum_weights) + 1 
-    
+    #e_penalty_weight = (T_max * sum_weights) + 1 
+    e_penalty_weight = 10e9
     print(f"Adicionando Função Objetivo (Penalidade e = {e_penalty_weight})")
     # --- Definição das Restrições ---
     job_indices = [j.idx for j in jobs]
@@ -376,8 +376,8 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     total_completion_time = gp.LinExpr()
     for j_indx in job_indices:
         completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_indx, []))
-        total_completion_time += job_weights[j_indx] * completion_time_expr
-    
+        #total_completion_time += job_weights[j_indx] * completion_time_expr
+        total_completion_time += completion_time_expr
     """   
     sorted_dues = sorted(jobs_by_duedate.keys())
 
