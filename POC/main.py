@@ -131,7 +131,7 @@ def create_interactive_gantt(solution_jobs, machine_name):
             "Due Date Slot": True,
             "Release Date": True,
         },
-        title=f"Agendamento - {machine_name} (Foco em Tardiness)"
+        title=f"Agendamento - {machine_name}"
     )
 
     fig.update_yaxes(autorange="reversed")
@@ -275,7 +275,8 @@ class Network:
 def build_model(network, jobs, count_machines, time_capacity_data=None):
 
     model = gp.Model("machine_scheduling")
-
+    
+    
     # --- Preparação dos Dados ---
     all_arcs = network.arcs_A1 + network.arcs_A2 + network.arcs_A3 + network.arcs_A4
     network.all_arcs = all_arcs
@@ -297,8 +298,39 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         arcs_in_by_node_key.setdefault(node_key_dst, []).append(idx)
         arcs_out_by_node_key.setdefault(node_key_src, []).append(idx)
 
-     # --- Definição das Restrições ---
+    # Devemos agrupar os jobs de acordo com sua deadline
+    # Por exemplo, se temos jobs com um dia antes do dia do inicio, o completion time deles
+    # Deve ser menor do que aqueles jobs com deadline posteriores
+    jobs_by_duedate = {}
+    for job in jobs:
+        jobs_by_duedate.setdefault(job.due_date_slot, []).append(job)
+    
+    
+    # 1. ORDENAR JOBS POR URGÊNCIA (Menor Due Date -> Mais Urgente)
+    sorted_jobs = sorted(jobs, key=lambda j: (j.due_date_slot, j.p_time))
+
+    job_weights = {}
+    N = len(sorted_jobs)
+    print("Calculando PESOS EXPONENCIAIS (Prioridade Estrita)...")
+    for rank, job in enumerate(sorted_jobs):        
+        exponent = N - rank
+        weight = 2 ** exponent 
+        job_weights[job.idx] = weight
+
+   
+    sum_weights = sum(job_weights.values())
+
+    # Horizonte Máximo
+    T_max = SLOTS_PER_DAY * (HORIZON + 1)
+
+    # Penalidade = (Pior Caso de Custos) + Margem
+    # Pior Caso = Todos os jobs terminam no tempo T_max
+    e_penalty_weight = (T_max * sum_weights) + 1 
+    
+    print(f"Adicionando Função Objetivo (Penalidade e = {e_penalty_weight})")
+    # --- Definição das Restrições ---
     job_indices = [j.idx for j in jobs]
+
 
     # --- Definição das Variáveis ---
     x = model.addVars(arc_indices, vtype=GRB.BINARY, name="x")
@@ -340,17 +372,35 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         # Fluxo de entrada deve ser igual ao fluxo de saída
         model.addConstr(gp.quicksum(x[a] for a in in_arcs) == gp.quicksum(x[a] for a in out_arcs), name=f"flow_cons_{j_idx}_{t}")
     
-    # Definição do tardiness
-
+    # Total completion_time
+    total_completion_time = gp.LinExpr()
     for j_indx in job_indices:
         completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_indx, []))
-        job_due_date = next(j.due_date_slot for j in jobs if j.idx == j_indx)
+        total_completion_time += job_weights[j_indx] * completion_time_expr
+    
+    """   
+    sorted_dues = sorted(jobs_by_duedate.keys())
 
-        model.addConstr(T[j_indx] >= completion_time_expr - job_due_date, name=f"tardiness_def_{j_indx}")
-        model.addConstr(T[j_indx] >= 0, name=f"tardiness_nonneg_{j_indx}")
+    print(f"Sorted Due Dates: {sorted_dues}")
+    print("Adicionando restrição: Ordem de Completion Time por Due Date")
+    # A ideia eh que o completion time de cada job
+    # do grupo_next deve ser maior ou igual ao do grupo_current
+    for i in range(len(sorted_dues) - 1):
+        due_corrent = sorted_dues[i]
+        due_next = sorted_dues[i + 1]
 
+        
+        group_current = jobs_by_duedate[due_corrent]
+        group_next = jobs_by_duedate[due_next]
 
+        for job_curr in group_current:
+            for job_next in group_next:
+                completion_time_curr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(job_curr.idx, []))
+                completion_time_next = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(job_next.idx, []))
+                
+                model.addConstr(completion_time_next >= completion_time_curr, name=f"comp_time_order_{job_curr.idx}_{job_next.idx}")
 
+    """
     """
     print("Adicionando restrição: Capacidade de tempo")
     if time_capacity_data:
@@ -394,17 +444,14 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
                 name=f"max_cap_window_{k}_{window_start}"
             )
     """
-    e_penalty_weight = 10e9
-    print(f"Adicionando Função Objetivo (Penalidade e = {e_penalty_weight})")
+    
     
     # Soma de todas as variáveis 'e' (jobs não alocados)
     total_penalty = gp.quicksum(e[j] * e_penalty_weight for j in job_indices)
-    total_tardiness = gp.quicksum(T[j] for j in job_indices)
     
     # --- Definição da Função Objetivo ---
-    model.setObjective(total_tardiness + total_penalty, GRB.MINIMIZE)
-    #model.setObjective(total_completion_time + total_penalty, GRB.MINIMIZE)
-    return model, x, e, total_tardiness
+    model.setObjective(total_completion_time + total_penalty, GRB.MINIMIZE)
+    return model, x, e, total_completion_time
 
 
 
@@ -415,13 +462,13 @@ def main():
 
     for machine in machines:
         machine_name = machine['machine_name']
-        if machine_name != 'coldboxgasado_coldbox4':
+        if machine_name != 'coldboxgasado_coldboxpequena':
             continue
         
         machine_time_capacity  = machine['time_capacity']
         machine_id = machine['machine_id']
         machine_name = machine['machine_name']
-        jobs_machine = [Job(j['job_id'], j['processing_slots'], j.get('release_date_slot', 0), j.get('deadline_date_slot', SLOTS_PER_DAY)) for j in jobs_data if j['assigned_machine_id'] == machine_id]
+        jobs_machine = [Job(j['job_id'], j['processing_slots'], j.get('release_date_slot', 0), j.get('deadline_slot', SLOTS_PER_DAY)) for j in jobs_data if j['assigned_machine_id'] == machine_id]
         print(f"Quantia de jobs na máquina {machine_name}: {len(jobs_machine)}")
 
         n = len(jobs_machine)
@@ -469,7 +516,7 @@ def main():
         net = Network(nodes, m_setup, job_dummy, all_jobs_for_net)
         
         model, x, e, C_max = build_model(net, jobs_machine, 1, machine_time_capacity)
-        model.write("modelo.lp")
+        #model.write("modelo.lp")
         model.optimize()
 
         if model.Status == GRB.OPTIMAL:
