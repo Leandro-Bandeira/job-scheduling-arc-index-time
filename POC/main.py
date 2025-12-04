@@ -337,7 +337,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
     e = model.addVars(job_indices, vtype=GRB.BINARY, name="e")
     #C_max = model.addVar(vtype=GRB.CONTINUOUS, name="C_max")
     # Definição do tardiness dado por max(0, C_j - d_j)
-    T = model.addVars(job_indices, vtype=GRB.CONTINUOUS, name="T")
+    #T = model.addVars(job_indices, vtype=GRB.CONTINUOUS, name="T")
 
     # Definindo valores de custo
     arc_costs = {}
@@ -378,9 +378,10 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
         completion_time_expr = gp.quicksum(x[a] * arc_costs[a] for a in arcs_in_by_job.get(j_indx, []))
         #total_completion_time += job_weights[j_indx] * completion_time_expr
         total_completion_time += completion_time_expr
-    """   
+       
     sorted_dues = sorted(jobs_by_duedate.keys())
 
+    """
     print(f"Sorted Due Dates: {sorted_dues}")
     print("Adicionando restrição: Ordem de Completion Time por Due Date")
     # A ideia eh que o completion time de cada job
@@ -401,6 +402,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
                 model.addConstr(completion_time_next >= completion_time_curr, name=f"comp_time_order_{job_curr.idx}_{job_next.idx}")
 
     """
+    
     """
     print("Adicionando restrição: Capacidade de tempo")
     if time_capacity_data:
@@ -497,7 +499,20 @@ def main():
         max_release = max([j.release_date_slot for j in jobs_machine]) if jobs_machine else 0
         print("max_release ", max_release)
         T = math.ceil(days_needed * 24 * 60 / TIME_STEP) + max_release + SLOTS_PER_DAY
+        """
+        # Se vamos de i -> j e o due date de i é maior do que o de j, temos que proibir por setup
+        for i in range(n):
+            for j in range(n):
+                if i == j: continue
 
+                i_due_date = jobs_machine[i].due_date_slot
+                j_due_date = jobs_machine[j].due_date_slot
+
+                if i_due_date > j_due_date:
+                    m_setup[i][j] = T + SLOTS_PER_DAY
+                    
+        """
+        print(m_setup)
         print(f"Upper Bound for completion time {T}")
         # Define idx (1 a n) e cria nós
         for i, job in enumerate(jobs_machine):
@@ -516,7 +531,7 @@ def main():
         net = Network(nodes, m_setup, job_dummy, all_jobs_for_net)
         
         model, x, e, C_max = build_model(net, jobs_machine, 1, machine_time_capacity)
-        #model.write("modelo.lp")
+        model.write("modelo.lp")
         model.optimize()
 
         if model.Status == GRB.OPTIMAL:
@@ -529,9 +544,9 @@ def main():
             unscheduled_count = sum(1 for job in jobs_machine if e[job.idx].X > 0.5)
             
             # Se houver penalidade, subtrai do obj para mostrar só o atraso real
-            real_tardiness = obj_val - (unscheduled_count * 10e9)
+            #real_tardiness = obj_val - (unscheduled_count * 10e9)
             
-            print(f"Total Tardiness (Soma): {real_tardiness:.2f} slots")
+            #print(f"Total Tardiness (Soma): {real_tardiness:.2f} slots")
             print(f"Operações não atendidas: {unscheduled_count}")
             print("-------------------------------------------")
 
