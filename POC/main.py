@@ -403,7 +403,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
 
     """
     
-    """
+    
     print("Adicionando restrição: Capacidade de tempo")
     if time_capacity_data:
         windows = time_capacity_data.get('slots', [])
@@ -418,7 +418,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
                 arc = all_arcs[a_idx]
                 
                 # Ignora arcos que não representam um job real
-                if arc.dst_node.job.idx == 0:
+                if arc.type == 4 or arc.type == 3:
                     continue
 
                 # 1. Encontra o intervalo de processamento do job [inicio, fim)
@@ -445,7 +445,7 @@ def build_model(network, jobs, count_machines, time_capacity_data=None):
                 total_usage_in_window <= max_cap, 
                 name=f"max_cap_window_{k}_{window_start}"
             )
-    """
+    
     
     
     # Soma de todas as variáveis 'e' (jobs não alocados)
@@ -464,7 +464,7 @@ def main():
 
     for machine in machines:
         machine_name = machine['machine_name']
-        if machine_name != 'coldboxgasado_coldboxpequena':
+        if machine_name != 'coldboxgasado_coldbox4':
             continue
         
         machine_time_capacity  = machine['time_capacity']
