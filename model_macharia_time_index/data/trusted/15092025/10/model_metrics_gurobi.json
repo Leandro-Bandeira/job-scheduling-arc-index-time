@@ -1,0 +1,10 @@
+[
+  {
+    "machine_name": "pepset_carrossel",
+    "solver": "gurobi_persistent",
+    "objective_value": 2.1333,
+    "num_variables": 5482,
+    "num_constraints": 14798,
+    "timestamp": "2025-10-29 15:34:28"
+  }
+]

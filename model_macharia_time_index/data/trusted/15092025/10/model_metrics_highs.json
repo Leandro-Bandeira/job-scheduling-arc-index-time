@@ -1,0 +1,50 @@
+[
+  {
+    "machine_name": "coldboxgasado_coldboxpequena",
+    "solver": "highs",
+    "objective_value": 0.0,
+    "num_variables": 24,
+    "num_constraints": 13,
+    "timestamp": "2025-10-29 15:34:26"
+  },
+  {
+    "machine_name": "coldboxgasado_coldboxpequena",
+    "solver": "highs",
+    "objective_value": 0.0,
+    "num_variables": 24,
+    "num_constraints": 13,
+    "timestamp": "2025-10-29 15:34:26"
+  },
+  {
+    "machine_name": "coldboxsoprado_sopradora",
+    "solver": "highs",
+    "objective_value": 0.003,
+    "num_variables": 78,
+    "num_constraints": 117,
+    "timestamp": "2025-10-29 15:34:26"
+  },
+  {
+    "machine_name": "coldboxsoprado_sopradora",
+    "solver": "highs",
+    "objective_value": 0.003,
+    "num_variables": 78,
+    "num_constraints": 117,
+    "timestamp": "2025-10-29 15:34:26"
+  },
+  {
+    "machine_name": "coldboxgasado_coldbox4",
+    "solver": "highs",
+    "objective_value": 0.0,
+    "num_variables": 24,
+    "num_constraints": 13,
+    "timestamp": "2025-10-29 15:34:26"
+  },
+  {
+    "machine_name": "coldboxgasado_coldbox4",
+    "solver": "highs",
+    "objective_value": 0.0,
+    "num_variables": 24,
+    "num_constraints": 13,
+    "timestamp": "2025-10-29 15:34:26"
+  }
+]

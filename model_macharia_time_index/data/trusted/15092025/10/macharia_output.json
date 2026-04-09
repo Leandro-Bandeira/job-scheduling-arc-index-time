@@ -1,0 +1,273 @@
+{
+  "gap_optimization": {
+    "optimization_summary": {
+      "1": {
+        "count_jobs_missed": 0,
+        "machine_name": "coldboxsoprado_sopradora",
+        "status": "ok",
+        "elapsed_time_seconds": 0.01,
+        "gap": null
+      },
+      "2": {
+        "count_jobs_missed": 0,
+        "machine_name": "coldboxgasado_coldbox4",
+        "status": "ok",
+        "elapsed_time_seconds": 0.0,
+        "gap": null
+      },
+      "3": {
+        "count_jobs_missed": 0,
+        "machine_name": "coldboxgasado_coldboxpequena",
+        "status": "ok",
+        "elapsed_time_seconds": 0.0,
+        "gap": null
+      }
+    },
+    "machines_scheduling": [
+      {
+        "machine_id": 1,
+        "machine_name": "coldboxsoprado_sopradora",
+        "jobs": [
+          {
+            "job_id": 1,
+            "job_register_id": 6,
+            "kp_fichaTecnica": 5134,
+            "op": 145264,
+            "_kf_macho": 840,
+            "release_date_index": 1,
+            "deadline_date_index": 5,
+            "config": "A",
+            "assigned_day": 1,
+            "processing_minutes": 14.0,
+            "machine_id": 1,
+            "has_lateness": 0
+          },
+          {
+            "job_id": 2,
+            "job_register_id": 7,
+            "kp_fichaTecnica": 5134,
+            "op": 145264,
+            "_kf_macho": 834,
+            "release_date_index": 1,
+            "deadline_date_index": 5,
+            "config": "A",
+            "assigned_day": 1,
+            "processing_minutes": 14.0,
+            "machine_id": 1,
+            "has_lateness": 0
+          },
+          {
+            "job_id": 3,
+            "job_register_id": 20,
+            "kp_fichaTecnica": 5134,
+            "op": 145264,
+            "_kf_macho": 2629,
+            "release_date_index": 1,
+            "deadline_date_index": 5,
+            "config": "A",
+            "assigned_day": 1,
+            "processing_minutes": 18.0,
+            "machine_id": 1,
+            "has_lateness": 0
+          },
+          {
+            "job_id": 5,
+            "job_register_id": 6,
+            "kp_fichaTecnica": 5135,
+            "op": 145291,
+            "_kf_macho": 840,
+            "release_date_index": 0,
+            "deadline_date_index": 4,
+            "config": "A",
+            "assigned_day": 0,
+            "processing_minutes": 14.0,
+            "machine_id": 1,
+            "has_lateness": 0
+          },
+          {
+            "job_id": 6,
+            "job_register_id": 7,
+            "kp_fichaTecnica": 5135,
+            "op": 145291,
+            "_kf_macho": 841,
+            "release_date_index": 0,
+            "deadline_date_index": 4,
+            "config": "A",
+            "assigned_day": 0,
+            "processing_minutes": 14.0,
+            "machine_id": 1,
+            "has_lateness": 0
+          },
+          {
+            "job_id": 7,
+            "job_register_id": 20,
+            "kp_fichaTecnica": 5135,
+            "op": 145291,
+            "_kf_macho": 2629,
+            "release_date_index": 0,
+            "deadline_date_index": 4,
+            "config": "A",
+            "assigned_day": 0,
+            "processing_minutes": 18.0,
+            "machine_id": 1,
+            "has_lateness": 0
+          }
+        ],
+        "count_jobs": 6
+      },
+      {
+        "machine_id": 2,
+        "machine_name": "coldboxgasado_coldbox4",
+        "jobs": [
+          {
+            "job_id": 8,
+            "job_register_id": 1,
+            "kp_fichaTecnica": 4845,
+            "op": 145451,
+            "_kf_macho": 2879,
+            "release_date_index": 0,
+            "deadline_date_index": 2,
+            "config": null,
+            "assigned_day": 0,
+            "processing_minutes": 96.0,
+            "machine_id": 2,
+            "has_lateness": 0
+          }
+        ],
+        "count_jobs": 1
+      },
+      {
+        "machine_id": 3,
+        "machine_name": "coldboxgasado_coldboxpequena",
+        "jobs": [
+          {
+            "job_id": 9,
+            "job_register_id": 1,
+            "kp_fichaTecnica": 1036,
+            "op": 145586,
+            "_kf_macho": 679,
+            "release_date_index": 0,
+            "deadline_date_index": 2,
+            "config": null,
+            "assigned_day": 0,
+            "processing_minutes": 18.0,
+            "machine_id": 3,
+            "has_lateness": 0
+          }
+        ],
+        "count_jobs": 1
+      }
+    ],
+    "not_satisfied_jobs": []
+  },
+  "job_scheduling_optimization": {
+    "optimization_summary": {
+      "0": {
+        "machine_name": "pepset_carrossel",
+        "sum_start_time": 2.13328705310656,
+        "missed_jobs": 0.0,
+        "status": "ok",
+        "elapsed_time_seconds": 0.2,
+        "elapsed_time_minutes": 0.0,
+        "MIPGap": 0.0
+      }
+    },
+    "machines_scheduling": [
+      {
+        "machine_id": 0,
+        "machine_name": "pepset_carrossel",
+        "jobs": [
+          {
+            "op": 145264,
+            "job_register_id": 1,
+            "job_id": 0,
+            "start": 336,
+            "end": 367,
+            "processing_slots": [
+              336,
+              337,
+              338,
+              339,
+              340,
+              341,
+              342,
+              343,
+              344,
+              345,
+              346,
+              347,
+              348,
+              349,
+              350,
+              351,
+              352,
+              353,
+              354,
+              355,
+              356,
+              357,
+              358,
+              359,
+              360,
+              361,
+              362,
+              363,
+              364,
+              365,
+              366,
+              367
+            ],
+            "sub_machine": 0,
+            "status_integration_id": "10",
+            "Status_Processed": ""
+          },
+          {
+            "op": 145291,
+            "job_register_id": 1,
+            "job_id": 4,
+            "start": 48,
+            "end": 79,
+            "processing_slots": [
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              65,
+              66,
+              67,
+              68,
+              69,
+              70,
+              71,
+              72,
+              73,
+              74,
+              75,
+              76,
+              77,
+              78,
+              79
+            ],
+            "sub_machine": 0,
+            "status_integration_id": "10",
+            "Status_Processed": ""
+          }
+        ]
+      }
+    ],
+    "not_satisfied_jobs": []
+  }
+}

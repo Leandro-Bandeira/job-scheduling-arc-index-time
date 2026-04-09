@@ -1,0 +1,2 @@
+1- Optimize a model with 149983 rows, 5468070 columns and 16520417 nonzeros (sem tirar arcos a4)
+Optimize a model with 149983 rows, 5468070 columns and 16492524 nonzeros

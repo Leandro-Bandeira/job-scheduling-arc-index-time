@@ -1,0 +1,16 @@
+,machine_name,dia,setup_real,uso_real,atrasados_real,makespan_real,setup_sched,uso_sched,atrasados_sched,makespan_sched,delta_setup,delta_atrasados,delta_makespan,max_dia,time_gain_max
+0,coldboxgasado_coldbox4,2025-09-29,0,240,0,240,0,250,0,250,0,0,-10,1305,0.0
+1,coldboxgasado_coldbox4,2025-09-30,0,432,0,507,0,495,0,495,0,0,12,1305,0.0
+2,coldboxgasado_coldbox4,2025-10-01,0,96,0,96,0,100,0,100,0,0,-4,1305,0.0
+3,coldboxgasado_coldbox4,2025-10-02,0,288,0,363,0,345,0,345,0,0,18,1305,0.0
+4,coldboxgasado_coldbox4,2025-10-03,0,288,0,339,0,345,0,345,0,0,-6,1305,0.0
+5,coldboxgasado_coldboxpequena,2025-09-29,0,156,0,156,0,160,0,160,0,0,-4,1305,0.0
+6,coldboxgasado_coldboxpequena,2025-09-30,0,423,0,597,0,480,0,1110,0,0,-513,1305,0.0
+7,coldboxgasado_coldboxpequena,2025-10-01,0,300,0,300,0,360,0,360,0,0,-60,1305,0.0
+8,coldboxgasado_coldboxpequena,2025-10-02,0,123,0,123,0,130,0,130,0,0,-7,1305,0.0
+9,coldboxgasado_coldboxpequena,2025-10-03,0,303,0,363,0,365,0,365,0,0,-2,1305,0.0
+10,coldboxsoprado_sopradora,2025-09-29,720,492,0,590,190,460,0,698,530,0,-108,954,55.55555555555556
+11,coldboxsoprado_sopradora,2025-09-30,340,229,0,229,120,321,0,441,220,0,-212,954,23.060796645702304
+12,coldboxsoprado_sopradora,2025-10-01,330,189,0,189,120,209,0,329,210,0,-140,954,22.0125786163522
+13,coldboxsoprado_sopradora,2025-10-02,370,243,0,243,120,263,0,383,250,0,-140,954,26.20545073375262
+14,coldboxsoprado_sopradora,2025-10-03,290,174,0,174,90,194,0,284,200,0,-110,954,20.964360587002094
